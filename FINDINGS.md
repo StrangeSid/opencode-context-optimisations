@@ -108,7 +108,11 @@ So `context` compression **cannot stop this step's auto-compaction**. It can low
 3. make compression durable (`prompt` or `tool.execute.after`, both lossy and not clearly persisted);
 4. use the `compaction` hook to make compaction cheaper/better, not to avoid it.
 
-### 2.3 Messages are not `{info, parts}`
+### 2.3 The reference plugin is V1-only
+
+The reference's `packages/opencode/src/plugin.ts` returns V1 hooks (`command.execute.before`, `experimental.session.compacting`, `experimental.chat.messages.transform`). **V2 does not translate these.** It loads the default export's `id` and `setup()`; a V1 `server()` implementation is ignored. The reference must be ported, not installed, on v2.1.3. Its Python pipeline and config logic can be reused behind the V2 hooks.
+
+### 2.4 Messages are not `{info, parts}`
 
 The V2 `Message` is a class:
 
@@ -213,7 +217,7 @@ Published evidence (LLMLingua-2 paper): good on MeetingBank-style summarization/
 | **Compaction** | native/manual compaction | transcript, code-safe | compaction result | on |
 | **Tool output** | single result > size threshold | prose tool output; logs via structure | unverified | off initially |
 
-The request lane is the direct answer to "use LLMLingua more often": it runs automatically on every model call, but only does work when the context is under pressure and only on safe content.
+The request lane is the direct answer to "use LLMLingua more often": it runs automatically on every model call, but only does work when the context is under pressure and only on safe content. The compaction lane is automatic too; commands exist only for inspection and overrides.
 
 ### 4.3 Content policy
 
@@ -380,6 +384,29 @@ Record per model call:
 - compaction count and summary size.
 
 Expose `/llmlingua stats`, `/llmlingua context`, `/llmlingua on|off`, and a debug dump of before/after snippets. Do not put compressed text in logs by default (secrets).
+
+---
+
+### 4.11 Enabling it
+
+A local V2 plugin is loaded from `.opencode/plugins/` or the `plugins` array:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "/workspace/opencode-context-optimisations",
+      "options": {
+        "request": { "softRatio": 0.55, "llmlinguaRatio": 0.70 },
+        "expandTool": { "enabled": true }
+      }
+    }
+  ]
+}
+```
+
+No slash command is required: the `context` and `compaction` hooks run automatically. Commands are for inspection (`/llmlingua stats`, `/llmlingua context`, on/off), not for triggering the core path. For development, `plugins` accepts an absolute path or `file://` URL; the package must export a V2 default (`Plugin.define(...)`).
 
 ---
 
