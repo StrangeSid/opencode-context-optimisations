@@ -9,7 +9,8 @@ Version-pinned notes behind [FINDINGS.md](../FINDINGS.md). Verified on 2026-10-2
 | [`llmlingua.md`](./llmlingua.md) | LLMLingua/LLMLingua-2 install, API, model sizes, quality evidence, daemon vs spawn, alternatives |
 | [`bench.md`](./bench.md) | M3 Pro CPU benchmark: latency, startup, footprint, quality spot checks, verdict |
 | [`bench.json`](./bench.json) | Raw benchmark runs (36 runs, 12 configs, checksums) |
-| [`bench_llmlingua.py`](./bench_llmlingua.py) | Reproducible benchmark script |
+| [`bench_llmlingua.py`](./bench_llmlingua.py) | Reproducible Python benchmark script |
+| [`bench_llmlingua_js.mjs`](./bench_llmlingua_js.mjs) | Ad-hoc JS/ONNX probe (TinyBERT / BERT-base) |
 | [`bench_run.log`](./bench_run.log) | Full console output of the benchmark |
 
 ## Reproduce
@@ -22,8 +23,10 @@ uv pip install --python .venv-bench/bin/python llmlingua
 
 The script sets `HF_HOME` to `.venv-bench/hf-cache`; the first run downloads ~680 MB of models.
 
-JS/ONNX probe (TinyBERT, 57 MB) was run ad hoc in `/tmp`; numbers are recorded in FINDINGS §3.2. Re-run with:
+JS/ONNX probe (TinyBERT, 57 MB) was run ad hoc; numbers are recorded in FINDINGS §3.2. To rerun:
 
 ```bash
+mkdir -p /tmp/llm-js && cd /tmp/llm-js && npm init -y
 npm install @huggingface/transformers@4.2.0 @atjsh/llmlingua-2@3.0.0 js-tiktoken
+node /workspace/opencode-context-optimisations/research/bench_llmlingua_js.mjs
 ```
