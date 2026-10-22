@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.venv-bench/
+__pycache__/
+*.pyc
+.DS_Store
+research/.tmp_compressed.ts

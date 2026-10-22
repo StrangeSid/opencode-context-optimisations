@@ -1,0 +1,49 @@
+W1022 23:48:27.477000 91703 torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 199/199 [00:00<00:00, 32816.96it/s]
+loaded microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank in 2.87s (import 1.83s, threads 5)
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (621 > 512). Running this sequence through the model will result in indexing errors
+  prose_1k       rate=0.8  cold=   227.9ms warm=   202.5ms tokens 1011->813 (0.804)
+  prose_1k       rate=0.6  cold=   203.9ms warm=   215.8ms tokens 1011->616 (0.609)
+  prose_1k       rate=0.35 cold=   200.5ms warm=   201.2ms tokens 1011->378 (0.374)
+  build_log_2k   rate=0.8  cold=   492.5ms warm=   488.8ms tokens 2007->1601 (0.798)
+  build_log_2k   rate=0.6  cold=   491.8ms warm=   492.4ms tokens 2007->1214 (0.605)
+  build_log_2k   rate=0.35 cold=   491.3ms warm=   491.6ms tokens 2007->699 (0.348)
+  typescript_1k  rate=0.8  cold=   203.9ms warm=   200.1ms tokens 1001->807 (0.806)
+  typescript_1k  rate=0.6  cold=   200.8ms warm=   199.8ms tokens 1001->607 (0.606)
+  typescript_1k  rate=0.35 cold=   200.9ms warm=   198.8ms tokens 1001->371 (0.371)
+  prose_8k       rate=0.8  cold=  1629.3ms warm=  1622.3ms tokens 8044->6470 (0.804)
+  prose_8k       rate=0.6  cold=  1667.5ms warm=  1624.7ms tokens 8044->4910 (0.610)
+  prose_8k       rate=0.35 cold=  1647.6ms warm=  1615.9ms tokens 8044->3045 (0.379)
+  cold process run 1: 2629ms (import 1801ms, load 253ms, compress 234ms)
+  cold process run 2: 2598ms (import 1780ms, load 249ms, compress 227ms)
+  cold process run 3: 2587ms (import 1774ms, load 250ms, compress 227ms)
+
+### Latency and compression (CPU)
+
+| input | in tok | rate | cold ms | warm median ms | out tok | keep | markers | chars in→out |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| prose_1k | 1011 | 0.8 | 228 | 202 | 813 | 0.804 | 4/4 | 4717→4010 |
+| prose_1k | 1011 | 0.6 | 204 | 216 | 616 | 0.609 | 4/4 | 4717→3150 |
+| prose_1k | 1011 | 0.35 | 200 | 201 | 378 | 0.374 | 4/4 | 4717→1928 |
+| build_log_2k | 2007 | 0.8 | 492 | 489 | 1601 | 0.798 | 5/5 | 5716→5207 |
+| build_log_2k | 2007 | 0.6 | 492 | 492 | 1214 | 0.605 | 5/5 | 5716→4176 |
+| build_log_2k | 2007 | 0.35 | 491 | 492 | 699 | 0.348 | 4/5 | 5716→2373 |
+| typescript_1k | 1001 | 0.8 | 204 | 200 | 807 | 0.806 | 5/5 | 3139→2706 |
+| typescript_1k | 1001 | 0.6 | 201 | 200 | 607 | 0.606 | 5/5 | 3139→2181 |
+| typescript_1k | 1001 | 0.35 | 201 | 199 | 371 | 0.371 | 2/5 | 3139→1394 |
+| prose_8k | 8044 | 0.8 | 1629 | 1622 | 6470 | 0.804 | 4/4 | 37491→31732 |
+| prose_8k | 8044 | 0.6 | 1668 | 1625 | 4910 | 0.610 | 4/4 | 37491→25580 |
+| prose_8k | 8044 | 0.35 | 1648 | 1616 | 3045 | 0.379 | 4/4 | 37491→15429 |
+
+### Fresh process vs warm compression
+
+| path | median ms |
+|---|---:|
+| spawn + import + load + compress | 2592 |
+| model load only (in-process) | 2875 |
+| import only (in-process) | 1829 |
+| warm compress (prose_1k @ 0.6) | 216 |
+
+raw results: /workspace/opencode-context-optimisations/research/bench.json
