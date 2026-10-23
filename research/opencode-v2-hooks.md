@@ -1,10 +1,10 @@
 # OpenCode V2 plugin hooks and LLMLingua integration notes
 
-**Status:** research note for `opencode-context-optimisations`  
-**Verified against:** OpenCode `v2.1.3`, `@opencode/plugin@2.1.3`, `@opencode/ai@2.1.3`, `@opencode/schema@2.1.3`, `@opencode/client@2.1.3`  
+**Status:** research note for `opencode-context-optimisations`
+**Verified against:** OpenCode `v2.1.3`, `@opencode/plugin@2.1.3`, `@opencode/ai@2.1.3`, `@opencode/schema@2.1.3`, `@opencode/client@2.1.3`
 **Date:** 2026-10-22
 
-This note is deliberately version-pinned. V2 plugin APIs are still moving, and some runtime semantics below are not spelled out in the public docs.
+This note is deliberately version-pinned. V2 plugin APIs are still moving, and some runtime semantics below aren't spelled out in the public docs.
 
 ## Scope and method
 
@@ -31,8 +31,8 @@ Claims are marked where useful:
 - The important LLMLingua hook is `ctx.session.hook("context", ...)`. It runs for each agent-loop model request, including tool-driven continuations.
 - The `context` event exposes mutable `system`, `messages`, `tools`, and `options`. Changes affect only that outgoing model call. They are **not** persisted to session history or configuration. **[docs]**
 - Because the history is rebuilt from persisted state on every model call, compression must be reapplied every time. Cache compressed strings, not mutated `Message` objects.
-- Auto-compaction in 2.1.3 is decided **before** the `context` hook runs, using the context assembled for that step. Compression cannot change that step's decision. A prior compressed request can lower the measured usage OpenCode sees on later steps, so it may influence future thresholds indirectly; do not rely on it to prevent compaction. **[runtime]**
-- V1 plugin implementations do not run in V2. They must be ported to the V2 entrypoint and hook API. **[docs]**
+- Auto-compaction in 2.1.3 is decided **before** the `context` hook runs, using the context assembled for that step. Compression can't change that step's decision. A prior compressed request can lower the measured usage OpenCode sees on later steps, so it may influence future thresholds indirectly; don't rely on it to prevent compaction. **[runtime]**
+- V1 plugin implementations don't run in V2. They must be ported to the V2 entrypoint and hook API. **[docs]**
 
 ## 1. Plugin entrypoint and loading
 
@@ -148,9 +148,9 @@ The Promise API is simpler for a compression plugin that already needs an async 
 
 Auto-discovery:
 
-- direct `.ts` and `.js` files under `.opencode/plugins/`
-- immediate plugin package directories under `.opencode/plugins/`
-- the same layout under `~/.config/opencode/plugins/`
+- Direct `.ts` and `.js` files under `.opencode/plugins/`
+- Immediate plugin package directories under `.opencode/plugins/`
+- The same layout under `~/.config/opencode/plugins/`
 
 V2 discovers both `.opencode/plugin/` (the V1-era directory) and `.opencode/plugins/`, but use the plural directory for new V2 plugins. **[docs]**
 
@@ -251,7 +251,7 @@ Consequences:
 
 - Callbacks may be synchronous or asynchronous. The 2.1.3 session bridge wraps callbacks in `Promise.resolve(...)` and awaits them before continuing. **[runtime]** A slow LLMLingua sidecar therefore delays model dispatch.
 - The third `{ providerID }` argument is accepted only for events that contain `model`. `prompt` does **not** contain `model`, so provider scoping is a type error there. **[types]**
-- `await ctx.session.hook(...)` returns a `Registration`. You normally do not need to keep it: registrations are disposed when the plugin unloads. Retain it only to remove a hook earlier with `registration.dispose()`. **[docs]**
+- `await ctx.session.hook(...)` returns a `Registration`. You normally don't need to keep it: registrations are disposed when the plugin unloads. Retain it only to remove a hook earlier with `registration.dispose()`. **[docs]**
 
 The Effect entrypoint has analogous types in `dist/effect/registration.d.ts`: callbacks return `Effect.Effect<void>`, `Registration.dispose` is an `Effect`, and registration runs in `Scope.Scope`.
 
@@ -303,7 +303,7 @@ The docs are explicit:
 
 > `context` runs for the agent loop, including tool-driven continuations.
 
-A single user turn can produce many model calls: initial answer, tool call, tool result continuation, another tool call, and so on. `context` fires for each. This is the right place to compress the growing prompt, but it also means naïve compression will run many times per turn.
+A single user turn can produce many model calls: initial answer, tool call, tool result continuation, another tool call, and so on. `context` fires for each. This is the right place to compress the growing prompt. But it also means naïve compression will run many times per turn.
 
 ### 2.4 Transient edits are the key constraint
 
@@ -316,7 +316,7 @@ Implications:
 - `ctx.session.context({ sessionID })` returns persisted message info, not the mutated outgoing copy.
 - The UI/history continues to show the original text.
 - The next model call reconstructs messages from persisted state, so the original text comes back. You must reapply compression every call.
-- Do not rely on markers you wrote into message parts; they disappear with the transient copy.
+- Don't rely on markers you wrote into message parts; they disappear with the transient copy.
 
 ## 3. Exact session hook types
 
@@ -350,10 +350,10 @@ Important details:
 - `sessionID`, `model`, and `agent` are readonly. `system`, `messages`, `options`, and `tools` are mutable.
 - `model` is only a `Model.Ref` (`{ id, providerID, variant? }`). It does **not** contain context limits. Use `ctx.model.list()` for limits (see §6).
 - `tools` is a name → `{ description, input }` record. You can delete a tool to hide it from this request. **[docs]**
-- `options` starts empty for each model call. It does not contain resolved model settings. Typed keys are generation settings; unknown keys are provider options. Deleting a key or setting it to `undefined` falls back to configured defaults. **[docs]**
+- `options` starts empty for each model call. It doesn't contain resolved model settings. Typed keys are generation settings; unknown keys are provider options. Deleting a key or setting it to `undefined` falls back to configured defaults. **[docs]**
 - Provider option objects merge recursively; arrays and scalar values replace earlier values. **[docs]**
 
-The docs show IDs as plain strings; the actual declarations use branded types such as `Session.ID`, `Agent.ID`, `Model.Ref`, and `Tool.CallID`. At runtime they are strings, but TypeScript will require the branded types in strict code.
+The docs show IDs as plain strings. The actual declarations use branded types such as `Session.ID`, `Agent.ID`, `Model.Ref`, and `Tool.CallID`. At runtime they are strings, but TypeScript will require the branded types in strict code.
 
 Documented mutation example:
 
@@ -399,7 +399,7 @@ export interface SessionPrompt {
 - Runs for commands that submit through `session.prompt`.
 - Does **not** run for synthetic messages, shell messages, compaction controls, or move controls.
 - Edits become the canonical persisted user input.
-- No typed rejection API. Throwing is not a supported way to reject a prompt.
+- No typed rejection API. Throwing isn't a supported way to reject a prompt.
 - Retry-safe but not exactly-once: retrying an already pending/delivered ID returns the original admission without rerunning hooks; concurrent submissions can run hooks more than once, but only the first successful admission wins.
 - If you rewrite text, update or remove attachment `mention` offsets.
 
@@ -556,7 +556,7 @@ export declare class Message {
 }
 ```
 
-This is a common API trap: the docs often say `Message[]`, but the actual field is `content`, not `parts`. There is no `message.parts`.
+This is a common API trap: the docs often say `Message[]`, but the actual field is `content`, not `parts`. There's no `message.parts`.
 
 If you replace a message rather than mutating it, preserve `id`, `native`, `providerMetadata`, and all tool-call/tool-result IDs. Those fields carry provider replay state; dropping them can break provider-specific continuation.
 
@@ -651,7 +651,7 @@ type ToolResultValue =
     }
 ```
 
-For LLMLingua, this matters: a tool result is not a plain string. You must descend into `result` and handle the `json` / `text` / `error` / `content` variants without breaking the `id`/`name` linkage.
+For LLMLingua, this matters: a tool result isn't a plain string. You must descend into `result` and handle the `json` / `text` / `error` / `content` variants without breaking the `id`/`name` linkage.
 
 ### 4.3 `SystemPart`
 
@@ -727,7 +727,7 @@ await ctx.tool.hook("execute.after", (event) => {
 })
 ```
 
-Whether that replacement is written to persisted history or only returned to the caller is **[open]** (see §10). If it persists, compressing tool output here could avoid recompression in `context`; if it does not, it provides no lasting benefit.
+Whether that replacement is written to persisted history or only returned to the caller is **[open]** (see §10). If it persists, compressing tool output here could avoid recompression in `context`; if it doesn't, it provides no lasting benefit.
 
 ## 5. Compaction configuration and behavior
 
@@ -785,10 +785,10 @@ Whether that replacement is written to persisted history or only returned to the
 
 - `native` uses the provider's compaction endpoint; `summary` uses OpenCode's own summary.
 - A model setting overrides the provider setting.
-- Native support is currently OpenAI Responses models; support varies by deployment/model.
+- Native support is currently OpenAI Responses models. Support varies by deployment/model.
 - An encrypted native checkpoint only works with the same provider and model. Switching models continues from the original conversation.
-- If the provider rejects a native compaction as too long, OpenCode retries with a smaller request; it does not switch to summary.
-- Compaction uses the session's model; there is no separate compaction model.
+- If the provider rejects a native compaction as too long, OpenCode retries with a smaller request. It doesn't switch to summary.
+- Compaction uses the session's model; there's no separate compaction model.
 
 ### 5.4 Manual compaction
 
@@ -835,15 +835,15 @@ if (reason === "auto" && !aboveThreshold(context.model.limit, config.buffer)) {
 }
 ```
 
-The threshold uses OpenCode's internal token accounting: measured usage from the last matching assistant message when available, plus an estimate of the remaining `system + tools + messages`, compared against the model's input/context limit minus `buffer` (`limit.input ?? limit.context`). That estimator is not exposed to plugins.
+The threshold uses OpenCode's internal token accounting: measured usage from the last matching assistant message when available, plus an estimate of the remaining `system + tools + messages`, compared against the model's input/context limit minus `buffer` (`limit.input ?? limit.context`). That estimator isn't exposed to plugins.
 
 The `context` hook is triggered later, inside `request.primary`. Therefore:
 
 > **Compression in the `context` hook does not change the auto-compaction decision for that step.** The decision was already made against the context assembled for that step.
 
-There is an indirect effect across steps: the next step's measured component comes from the previous assistant message's provider token usage, which reflects the compressed request. A compressed request can therefore lower measured usage and influence later thresholds. It does not make the current step's raw context disappear, and it is not a reliable way to prevent compaction.
+There is an indirect effect across steps: the next step's measured component comes from the previous assistant message's provider token usage, which reflects the compressed request. A compressed request can therefore lower measured usage and influence later thresholds. It doesn't make the current step's raw context disappear, and it isn't a reliable way to prevent compaction.
 
-This does not make compression useless: it lowers tokens sent per call, provider cost, and the chance of an overflow rejection. But it does **not** replace compaction, and it will not reliably delay the automatic threshold.
+This doesn't make compression useless: it lowers tokens sent per call, provider cost, and the chance of an overflow rejection. But it does **not** replace compaction, and it won't reliably delay the automatic threshold.
 
 Options if the goal is to avoid compaction entirely:
 
@@ -868,7 +868,7 @@ Native compaction appears to bypass the `compaction` hook because it calls the p
 
 It has no `limit`, no token counts, and no full model info. **[types]**
 
-`event.options` starts empty and does not contain resolved settings. **[docs]**
+`event.options` starts empty and doesn't contain resolved settings. **[docs]**
 
 There is **no token-usage field** on the `context` event. You must estimate or fetch it.
 
@@ -895,7 +895,7 @@ const outputLimit = info?.limit.output
 }
 ```
 
-Cache this lookup by provider/model; it is not something to fetch on every hook if you can avoid it.
+Cache this lookup by provider/model; it isn't something to fetch on every hook if you can avoid it.
 
 ### 6.3 Persisted token usage
 
@@ -914,7 +914,7 @@ Cache this lookup by provider/model; it is not something to fetch on every hook 
 
 Uses:
 
-- `SessionInfo.tokens` is a session-level total, not a per-step value; do not treat it as the current context size.
+- `SessionInfo.tokens` is a session-level total, not a per-step value; don't treat it as the current context size.
 - The latest assistant step's `tokens` can indicate actual provider usage after a compressed request.
 - `ctx.session.context()` returns the **raw persisted history**, not the outgoing compressed copy. It is useful for measuring savings and for debug, not for reading back your transient edits.
 
@@ -927,7 +927,7 @@ Since the event has no token count and `Model.Ref` has no limit:
 3. Keep a safety buffer for output and provider overhead.
 4. Optionally refresh actual usage from the latest assistant `tokens` after each response.
 
-OpenCode's own internal estimator is not exported. Do not assume a plugin-side character heuristic matches it exactly.
+OpenCode's own internal estimator isn't exported. Don't assume a plugin-side character heuristic matches it exactly.
 
 ## 7. V1 plugins in V2
 
@@ -1044,7 +1044,7 @@ V2 reads the default export's `id` and `setup()` (or `effect()`), ignoring `serv
 
 ### 8.1 Hook-only skeleton
 
-This is intentionally small: it shows the correct hook, a cache, and a failure fallback. It does not implement LLMLingua itself.
+This is intentionally small: it shows the correct hook, a cache, and a failure fallback. It doesn't implement LLMLingua itself.
 
 ```ts
 // .opencode/plugins/llmlingua.ts
@@ -1119,7 +1119,7 @@ Notes on the skeleton:
 - This only compresses `text` parts. In production, extend it to `tool-result` content, where most long context usually lives.
 - The cache is unbounded. Add an LRU or size cap before using it on long sessions.
 - The sidecar call is per cache miss. Batch multiple candidates in one request to reduce overhead.
-- The hook catches compression failures and uses the original text. Do not let a sidecar outage break model requests.
+- The hook catches compression failures and uses the original text. Don't let a sidecar outage break model requests.
 - `KEEP_RECENT_MESSAGES = 4` is a placeholder. A token-budgeted recent window is better than a fixed message count.
 
 ### 8.2 Sidecar contract
@@ -1136,12 +1136,12 @@ POST http://127.0.0.1:8765/compress
 
 Production additions:
 
-- batch endpoint for multiple texts
-- health check at `setup`
-- explicit request timeout
-- concurrency limit
-- graceful fallback to original text
-- cleanup on plugin unload (kill child process, or leave an externally managed service alone)
+- Batch endpoint for multiple texts
+- Health check at `setup`
+- Explicit request timeout
+- Concurrency limit
+- Graceful fallback to original text
+- Cleanup on plugin unload (kill child process, or leave an externally managed service alone)
 
 ### 8.3 Config
 
@@ -1183,7 +1183,7 @@ Why:
 - Edits are transient, so the user's history and UI remain intact.
 - It is late enough to see the final assembled context, but early enough to change what the model receives.
 
-Do not use `prompt` for LLMLingua unless you want durable, lossy compression of user input. It runs once at admission, persists edits, and cannot see tool output or later history. Do not use `http.request` unless you deliberately want provider-specific body surgery; it is brittle and bypasses the semantic `Message` model.
+Don't use `prompt` for LLMLingua unless you want durable, lossy compression of user input. It runs once at admission, persists edits, and can't see tool output or later history. Don't use `http.request` unless you deliberately want provider-specific body surgery. It is brittle and bypasses the semantic `Message` model.
 
 ### 9.2 Per-call, not per-turn
 
@@ -1207,7 +1207,7 @@ Because `context` mutations are transient:
 
 - The next call's `event.messages` contains the original text again.
 - A cache keyed by original content is the only way to avoid recomputation.
-- Do not store a reference to a mutated `Message` and expect it to survive; messages are rebuilt.
+- Don't store a reference to a mutated `Message` and expect it to survive; messages are rebuilt.
 
 Recommended cache key:
 
@@ -1218,9 +1218,9 @@ plugin-version : compression-settings : model-scope? : sha256(original text)
 Include:
 
 - LLMLingua model/version
-- rate / target ratio
-- any prompt template or language setting
-- optionally provider/model if the target rate depends on context limit
+- Rate / target ratio
+- Any prompt template or language setting
+- Optionally provider/model if the target rate depends on context limit
 
 If the key changes, old entries are simply unused; an LRU will evict them.
 
@@ -1228,9 +1228,9 @@ If the key changes, old entries are simply unused; an LRU will evict them.
 
 Concrete strategy:
 
-1. **Content-hash cache.** Compute `sha256(original text)`; store compressed text in an in-memory `Map` or LRU. Cache hits are synchronous and cheap. If `Message.id` proves stable across calls, use it as a fast lookup; still include a content hash so an edited/reused ID cannot return stale output. For structured tool results, hash a canonical serialization, not an object whose key order may change.
+1. **Content-hash cache.** Compute `sha256(original text)`; store compressed text in an in-memory `Map` or LRU. Cache hits are synchronous and cheap. If `Message.id` proves stable across calls, use it as a fast lookup; still include a content hash so an edited/reused ID can't return stale output. For structured tool results, hash a canonical serialization, not an object whose key order may change.
 2. **Stable prefix only.** Walk messages from newest to oldest and preserve a recent token/character budget verbatim. Compress only messages before that boundary. The prefix is stable across tool continuations.
-3. **Per-message or fixed-chunk compression.** Compressing one giant rolling window invalidates the cache whenever the window shifts. Compress individual messages, or fixed chunks of messages, so appends do not change old keys.
+3. **Per-message or fixed-chunk compression.** Compressing one giant rolling window invalidates the cache whenever the window shifts. Compress individual messages, or fixed chunks of messages, so appends don't change old keys.
 4. **Batch cache misses.** One sidecar request with all new texts per model call, not one request per part.
 5. **Deduplicate in-flight work.** Keep `Map<key, Promise<string>>` so concurrent hooks for the same text share one compression.
 6. **Deterministic output.** Use deterministic decoding/settings where possible. If LLMLingua is stochastic, the cache still makes repeated calls stable, but cold starts and evictions will change the prompt and can break provider prompt caching.
@@ -1239,19 +1239,19 @@ Concrete strategy:
    await ctx.storage.set(`llmlingua:${key}`, compressed)
    const hit = await ctx.storage.get(`llmlingua:${key}`)
    ```
-   Use it for cold-start persistence, but do not block every hook on disk I/O. In-memory LRU first; persist asynchronously.
+   Use it for cold-start persistence, but don't block every hook on disk I/O. In-memory LRU first; persist asynchronously.
 8. **Prune after compaction.** When history is replaced by a summary, old cache entries are dead weight. Listen for `session.compaction.*` events or evict by LRU.
 
 Do **not** rely on writing a marker into `part.metadata` to detect "already compressed". The mutation is transient, so the marker disappears on the next call.
 
 ### 9.5 Compaction still happens
 
-This is the main design constraint, repeated because it is easy to miss:
+This is the main design constraint, repeated because it's easy to miss:
 
 - In 2.1.3, `runStep` calls auto-compaction before `request.primary` (which triggers the `context` hook).
 - The auto gate compares the context assembled for that step to the model's input/context limit minus `buffer`.
-- Therefore, `context`-hook compression cannot change that step's automatic decision.
-- A compressed request can lower the previous assistant message's measured token usage, which feeds the next step's token accounting. That can influence future thresholds indirectly, but it is not a reliable way to prevent compaction.
+- Therefore, `context`-hook compression can't change that step's automatic decision.
+- A compressed request can lower the previous assistant message's measured token usage, which feeds the next step's token accounting. That can influence future thresholds indirectly, but it isn't a reliable way to prevent compaction.
 - `compaction.auto: false` disables the automatic threshold, but overflow recovery can still compact once and retry.
 - Native compaction uses a provider endpoint and likely bypasses the `compaction` hook.
 
@@ -1265,7 +1265,7 @@ If the product goal is "continuous LLMLingua compression instead of compaction",
 | Compress durable tool output in `execute.after` | Reduces raw history for tool results | Persistence unverified; lossy; breaks raw history |
 | Use `compaction` hook | Cheaper/better summaries; optional custom summary | Does not change threshold; native path may bypass |
 
-A realistic design is probably: transient LLMLingua compression in `context` for cost, plus normal compaction for hard context limits. Do not promise "no compaction" unless you also change durable history or disable auto and accept overflow behavior.
+A realistic design is probably: transient LLMLingua compression in `context` for cost, plus normal compaction for hard context limits. Don't promise "no compaction" unless you also change durable history or disable auto and accept overflow behavior.
 
 ### 9.6 Selective compression policy
 
@@ -1290,8 +1290,8 @@ LLMLingua drops tokens. That is dangerous for exact identifiers. Suggested polic
 
 Also:
 
-- Preserve `tool-call` / `tool-result` pairing. If you drop a result, do not leave an orphan call; if you drop a call, remove its result.
-- Do not change `id` or `name` on tool parts.
+- Preserve `tool-call` / `tool-result` pairing. If you drop a result, don't leave an orphan call; if you drop a call, remove its result.
+- Don't change `id` or `name` on tool parts.
 - Use a conservative rate (less compression) for code-heavy sessions; evaluate on real transcripts.
 - Protect negations, numbers, file paths, URLs, and quoted strings if your compressor supports token protection.
 
@@ -1312,20 +1312,20 @@ Recommendations:
 ### 9.8 Token budget and prompt caching
 
 - Use `ctx.model.list()` once per model to get `limit.context`, `limit.input`, and `limit.output`.
-- Budget roughly `(limit.input ?? limit.context) - limit.output - safetyBuffer` for input. The plugin cannot know the exact token count; leave headroom.
+- Budget roughly `(limit.input ?? limit.context) - limit.output - safetyBuffer` for input. The plugin can't know the exact token count; leave headroom.
 - `compaction.buffer` is OpenCode's safety margin for auto-compaction; your own compression budget should be at least as conservative.
 - Keep the compressed prefix stable. Provider prompt caching rewards identical prefixes; recompressing the same text differently on every call can turn cache hits into cache misses.
-- Cache key should include compression settings so a config change does not silently reuse old output.
+- Cache key should include compression settings so a config change doesn't silently reuse old output.
 
 ### 9.9 What not to do
 
-- Do not compress in `prompt` and call it "transient"; it persists.
-- Do not mutate persisted history or assume `context` edits are saved.
-- Do not recompress the entire history on every model call without a cache.
-- Do not assume compression prevents auto-compaction.
-- Do not compress tool-call IDs, structured JSON, code, paths, or errors without a protection policy.
-- Do not let the sidecar failure fail the model request.
-- Do not depend on V1 hooks; they do not run in V2.
+- Don't compress in `prompt` and call it "transient"; it persists.
+- Don't mutate persisted history or assume `context` edits are saved.
+- Don't recompress the entire history on every model call without a cache.
+- Don't assume compression prevents auto-compaction.
+- Don't compress tool-call IDs, structured JSON, code, paths, or errors without a protection policy.
+- Don't let the sidecar failure fail the model request.
+- Don't depend on V1 hooks; they don't run in V2.
 
 ### 9.10 Recommended spike
 
@@ -1342,7 +1342,7 @@ This sequence validates the hook mechanics and the economics before committing t
 
 ## 10. Open questions and verification checklist
 
-These are the things that were not fully settled by types/docs and should be tested against the target OpenCode build.
+These are the things that weren't fully settled by types/docs and should be tested against the target OpenCode build.
 
 | # | Question | Current evidence | How to settle |
 | ---: | --- | --- | --- |
@@ -1382,7 +1382,7 @@ await ctx.session.hook("http.request", async (event) => {
 })
 ```
 
-The second snippet is only for debugging; `http.request` bodies are one-shot streams, and `http.request` is not the right layer for normal compression.
+The second snippet is only for debugging; `http.request` bodies are one-shot streams, and `http.request` isn't the right layer for normal compression.
 
 ## 11. Sources
 

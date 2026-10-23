@@ -4,10 +4,10 @@ Researched 2026-10-22 from the upstream repo/source, PyPI, HF model cards, paper
 first-party measurements (M3 Pro, 18 GB, macOS 27.0.1, Python 3.12.9; `llmlingua` 0.2.2, `torch` 2.14.1,
 `transformers` 5.20.2).
 
-**Verdict:** LLMLingua-2 is the only variant worth shipping locally. It is a BERT-sized token
+**Verdict:** LLMLingua-2 is the only variant worth shipping locally. It's a BERT-sized token
 classifier: 0.7 GB model, ~0.22–0.31 s per 1k tokens on M3 Pro CPU, no CUDA, MIT/Apache-2.0.
 Good for verbose prose and (marginally) tool output; **not** safe for code, JSON, diffs, or enumeration-heavy
-tasks without guards. LLMLingua-1/LongLLMLingua need a 7B LM and are not viable on an 18 GB laptop.
+tasks without guards. LLMLingua-1/LongLLMLingua need a 7B LM and aren't viable on an 18 GB laptop.
 
 ---
 ## 1. Install, dependencies, footprint, license
@@ -86,7 +86,7 @@ if context filtering drops docs), `origin_tokens`, `compressed_tokens`, `ratio` 
 `cl100k_base` (`encoding_for_model("gpt-3.5-turbo")`), **not** the downstream model's tokenizer, so use
 your own tokenizer for budget accounting.
 
-`compress_json()` exists but a maintainer confirms **LLMLingua-2 does not support it**
+`compress_json()` exists but a maintainer confirms **LLMLingua-2 doesn't support it**
 ([#183](https://github.com/microsoft/LLMLingua/issues/183)).
 
 ---
@@ -115,7 +115,7 @@ fixed per-chunk constant, no KV cache and no token-by-token loop.
 
 Load: 2.0–2.3 s warm cache. RSS after load+compress on CPU: **864 MB**; MPS run peaked at 1.47 GB
 (process cumulative). MPS is ~3× faster in steady state but the first call is ~1.2 s vs 0.1 s, so a
-warmup call is mandatory. MPS is not officially documented; it works via `device_map="mps"`
+warmup call is mandatory. MPS isn't officially documented; it works via `device_map="mps"`
 ([#184](https://github.com/microsoft/LLMLingua/issues/184)) with torch 2.14.1. CPU is forced to
 **float32** by `load_model` (`"auto" if device_map == "cuda" else torch.float32`), which is why CPU
 memory is ~0.9 GB for the small model.
@@ -132,7 +132,7 @@ every >512-token call — suppress `transformers` logging in the daemon.
 ---
 ## 4. Quality
 
-LLMLingua-2 only **deletes tokens**; output is a subsequence of the input. It cannot hallucinate content,
+LLMLingua-2 only **deletes tokens**; output is a subsequence of the input. It can't hallucinate content,
 but it produces ungrammatical text and destroys formatting. Trained on GPT-4-distilled MeetingBank
 (meeting transcripts), so its notion of "important" is content words in speech.
 
@@ -162,7 +162,7 @@ Paper results (Table 2, LongBench, 3k-token budget, GPT-3.5; higher is better):
   and whole docs dropped by the context filter (6 of 8 survived in my test). Non-English is plausible
   (mBERT/XLM-R; Chinese LongBench in Appendix J) but the compressor was trained on English only.
 
-**Suggested rates** (conservative, for an agent transcript): prose/docs 0.6–0.7; verbose tool output
+**Suggested rates** (conservative, for an agent transcript): prose/docs 0.6–0.7. Verbose tool output
 0.6–0.7 with a length gate; code/diff/JSON **skip** (or 0.8+ only for reference material never edited);
 logs skip or 0.7 with `force_reserve_digit`; instructions/questions/system prompt never compressed.
 
@@ -183,7 +183,7 @@ compression of code-adjacent context as experimental and gate it behind an A/B t
   set `use_context_level_filter=False` so no doc is dropped.
 - **Caching:** outputs are deterministic (`seed_everything(42)`; identical hash across runs). Cache on
   `sha256(text|model|rate|force_tokens|chunk_end_tokens)`, LRU 200–500; cached calls are ~0 ms.
-- **Concurrency:** serialize through one worker/queue; the MPS allocator and embedding resize are not
+- **Concurrency:** serialize through one worker/queue; the MPS allocator and embedding resize aren't
   built for concurrent calls, and parallel calls compete for the same 1–3 GB of process memory.
 - **Guardrails:** skip if `<1.5k` tokens; skip code/JSON/diff; pass through if
   `compressed_tokens/origin_tokens > 0.9` or a required-literal check fails; 5 s timeout with fallback.
@@ -246,5 +246,5 @@ pc.compress_prompt(
 - The XLM-R card's title says "Bert-base..." (copy-paste error); weights are XLM-R large, licence MIT.
 - The brief's arXiv id 2310.05736 is **LLMLingua v1**, not LLMLingua-2; LLMLingua-2 is **2403.12968**
   ([paper](https://arxiv.org/abs/2403.12968)). LongLLMLingua is 2310.06839 as stated.
-- The `compress_prompt` docstring says LLMLingua-2 `rate` "should be >= 1.0"; that is wrong — it is a
+- The `compress_prompt` docstring says LLMLingua-2 `rate` "should be >= 1.0"; that is wrong — it's a
   keep-fraction in (0, 1], confirmed by measurement.

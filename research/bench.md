@@ -1,6 +1,6 @@
 # LLMLingua-2 on an Apple M3 Pro: CPU benchmark
 
-**Date:** 2026-10-22 (JST)  
+**Date:** 2026-10-22 (JST)
 **Question:** is per-turn LLMLingua-2 compression viable on this laptop with a
 < 500 ms per-turn budget?
 
@@ -52,7 +52,7 @@ inside the isolated venv rather than the user's normal Hugging Face cache.
 `uv pip install llmlingua` took **5m43s** wall time, mostly downloading and
 unpacking the PyTorch wheel. The first model download/load took **358.7 s**
 (~6 min) because the 709 MB model was fetched from the Hugging Face Hub; that
-number is a download-inclusive load from the initial run and is not
+number is a download-inclusive load from the initial run and isn't
 representative of a cached start. The retained `bench.json` is the subsequent
 cached rerun; its 2.87 s `load_s` covers Hub metadata checks, not the download.
 
@@ -86,7 +86,7 @@ the measured output/input token ratio.
 Each configuration was run three times: the first run is the "cold" call for
 that input/rate (model already loaded), and the warm median is the median of
 runs 2–3. All warm outputs were byte-identical across repeats (same 16-hex
-SHA-256 prefix), so these are not sampling-noise averages.
+SHA-256 prefix), so these aren't sampling-noise averages.
 
 | Input | Input tokens | Rate | Cold (ms) | Warm median (ms) | Output tokens | Keep | Chars in → out |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -106,7 +106,7 @@ SHA-256 prefix), so these are not sampling-noise averages.
 The measured keep ratio tracks the requested rate closely, within about 0.01.
 Latency is **almost independent of the rate**: every token is scored regardless
 of how many are kept, so chunk count and sequence length dominate. Dropping from
-0.8 to 0.35 does not make the model faster. The library splits text at sentence
+0.8 to 0.35 doesn't make the model faster. The library splits text at sentence
 and newline boundaries (512-token max chunks, batch size 50), which is why the
 2k log costs more than the 1k code sample despite a similar line count.
 
@@ -130,13 +130,13 @@ stack, loads the model, and compresses the same 1k prose input at rate 0.6.
 The daemon saves about **2.38 s per turn** versus spawning a fresh offline
 process. Online startup alone costs **3.1–4.0 s more** than a warm compression,
 before the child does any compression at all. If a solution needs one compression
-per turn, process-per-turn architecture is not viable; the model must stay
+per turn, process-per-turn architecture isn't viable. The model must stay
 resident.
 
 ## Quality spot-check
 
 These are excerpts from the exact inputs in `bench.json`, compressed at rate
-0.6. The input is synthetic TypeScript/log text; it is representative of code
+0.6. The input is synthetic TypeScript/log text. It is representative of code
 and test output, not a real repository file.
 
 ### TypeScript, rate 0.6
@@ -181,7 +181,7 @@ research/.tmp_compressed.ts(1,26): error TS1434: Unexpected keyword or identifie
 ...
 ```
 
-This is not a marginal degradation: the output cannot be used as TypeScript.
+This isn't a marginal degradation: the output can't be used as TypeScript.
 
 ### Build log, rate 0.6
 
@@ -207,15 +207,15 @@ After (first ~550 characters; the output is one line):
 
 The key error strings happen to survive at 0.8/0.6 (`ECONNREFUSED`,
 `error TS2345`, `AssertionError`, `tests 182`, `PASS`: 5/5), and at 0.35 four of
-five survive (`tests 182` is lost). But timestamps and line structure do not:
+five survive (`tests 182` is lost). But timestamps and line structure don't:
 the 5,716-character log becomes 4,176 characters on **one line**. A human can
-still find the error; a line-oriented tool or test reporter cannot use it
+still find the error; a line-oriented tool or test reporter can't use it
 without reconstruction.
 
 Prose is better: all four keyword markers survive at every rate, and the 1k
 sample is still readable in a telegraphic way. Negation retention is imperfect:
 3 negation markers in → 2 out at 1k, and 23 → 15 at 8k. Keyword-presence checks
-are a weak proxy for downstream accuracy; they are included only as a sanity
+are a weak proxy for downstream accuracy. They're included only as a sanity
 check, not as evidence that meaning is preserved.
 
 The whitespace/punctuation damage appears to be intrinsic to the LLMLingua-2
@@ -229,9 +229,9 @@ failure.
 1. **Run it in a daemon, not per process.** 2.6 s offline / 3.3–4.2 s online
    startup versus 0.2 s warm compression makes process-per-turn a non-starter.
 2. **Budget:** with a warm daemon, 1k prose ≈ 0.20 s and 2k logs ≈ 0.49 s fit
-   under 500 ms; 8k prose ≈ 1.62 s does not. Compress only the new/incremental
+   under 500 ms; 8k prose ≈ 1.62 s doesn't. Compress only the new/incremental
    part of the transcript, not the whole context.
-3. **Do not feed code through the default path.** The output is not valid
+3. **Don't feed code through the default path.** The output isn't valid
    syntax (0 braces/newlines, tsc `TS1005`). Use an AST-aware reducer for code,
    or leave code uncompressed. Logs are also structurally destroyed; use log
    deduplication/error extraction rather than token classification.
@@ -240,12 +240,12 @@ failure.
    prefixes, preserve an uncompressed fallback, and validate output before
    sending it to the model. Consider post-processing whitespace/newlines and
    testing `force_tokens` for critical identifiers; that will require additional
-   work and validation, and it does not fix the word-join formatting by itself.
+   work and validation, and it doesn't fix the word-join formatting by itself.
 5. **Overall:** for a < 500 ms per-turn budget, LLMLingua-2 BERT-base is
    technically fast enough only in the narrow warm, ≤1–2k prose case. Its
-   default output quality is not good enough to make it a safe general-purpose
+   default output quality isn't good enough to make it a safe general-purpose
    compression layer for an agent transcript. The latency is workable; the
-   fidelity is not.
+   fidelity isn't.
 
 ## Reproduction
 
@@ -270,7 +270,7 @@ checksums, marker retention, and process-startup measurements are in
 - "Cold" in the latency table means the first call for that input/rate with the
   model already loaded. True process-cold startup is measured separately above.
 - Quality was assessed with short spot checks, marker retention, and a TypeScript
-  parse; this is not a downstream task-accuracy evaluation.
+  parse; this isn't a downstream task-accuracy evaluation.
 - Inputs are passed as single strings, so the token-level path is exercised and
   the library's context-level filtering is bypassed. Multi-message/context-level
   compression may behave differently.

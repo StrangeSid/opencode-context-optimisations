@@ -9,14 +9,14 @@
 
 ## 0. TL;DR
 
-1. **The reference is a useful skeleton, but it does not do what this project needs.** It calls LLMLingua only when OpenCode compacts, and each call spawns a fresh Python process that reloads three models. Measured cold start of that path is **2.6–4.2 s** before any compression. That architecture cannot support "use LLMLingua more often."
+1. **The reference is a useful skeleton, but it doesn't do what this project needs.** It calls LLMLingua only when OpenCode compacts, and each call spawns a fresh Python process that reloads three models. Measured cold start of that path is **2.6–4.2 s** before any compression. That architecture can't support "use LLMLingua more often."
 2. **OpenCode V2 exposes the right hooks.** `ctx.session.hook("context")` runs before every agent-loop model request and can mutate the outgoing `system`, `messages`, `tools`, and `options`. `ctx.session.hook("compaction")` can pre-compress the transcript or replace the summarizer entirely via `event.result`. `ctx.tool.hook("execute.after")` can inspect or replace a tool result.
 3. **`context` edits are transient.** History is rebuilt on every call, so the same old text returns next step. Compression must be **cached by content hash**, not written into message metadata, or it will be recomputed on every tool continuation.
 4. **LLMLingua is a token-dropping compressor, not a summarizer.** On this machine LLMLingua-2 BERT-base takes **~0.20 s per 1k tokens** on CPU, **~1.6 s per 8k**, and **~0.7 s per 8k on MPS**. It is fast enough for selective use, not for blind whole-context compression on every call.
 5. **Quality is the real blocker, not latency.** Measured output destroys code (`tsc` fails with `TS1005`, zero braces/newlines), collapses logs to one line, and loses negations in prose. LLMLingua must be restricted to **old natural-language text**, with code/JSON/logs/errors/recent turns protected.
-6. **Auto-compaction cannot be prevented from the `context` hook.** In 2.1.3 the auto-compaction decision is made *before* `request.primary` triggers the hook. Compression lowers cost and overflow risk, but native compaction still fires at its threshold. Disabling `compaction.auto` is a separate, riskier decision.
+6. **Auto-compaction can't be prevented from the `context` hook.** In 2.1.3 the auto-compaction decision is made *before* `request.primary` triggers the hook. Compression lowers cost and overflow risk, but native compaction still fires at its threshold. Disabling `compaction.auto` is a separate, riskier decision.
 7. **Recommended shape:** a V2 plugin with three lanes — **continuous request compression** (old prose only, watermark-triggered), **compaction pre-compression** (reduce the summarizer's input), and **optional tool-output compression** (structural pruning, not token-level). Plus a content-hash cache, warm worker, and a `context_expand` tool so lossy compression is recoverable.
-8. **Expected saving is unknown and probably modest in code-heavy sessions.** Tool results dominate a coding transcript, and most of them are code, diffs, JSON or logs — all poor LLMLingua targets. The realistic wins are old prose/narration, web/doc output, pasted logs after structural pruning, and the compaction lane. Do not ship default-on until an A/B evaluation shows quality retention. The honest pitch is "compress the prose, preserve the code," not "compress everything."
+8. **Expected saving is unknown and probably modest in code-heavy sessions.** Tool results dominate a coding transcript, and most of them are code, diffs, JSON or logs — all poor LLMLingua targets. The realistic wins are old prose/narration, web/doc output, pasted logs after structural pruning, and the compaction lane. Don't ship default-on until an A/B evaluation shows quality retention. The honest pitch is "compress the prose, preserve the code," not "compress everything."
 
 ---
 
@@ -44,8 +44,8 @@ OpenCode compaction
 
 Per-turn (`experimental.chat.messages.transform` on ordinary turns) it runs **only TypeScript**:
 
-- dedupe identical tool calls (same name + parameters), keep newest output;
-- replace string inputs of errored tool calls older than 4 user turns with a marker.
+- Dedupe identical tool calls (same name + parameters), keep newest output;
+- Replace string inputs of errored tool calls older than 4 user turns with a marker.
 
 No LLMLingua. No Python. The README's own warning says the compaction result is smaller but often misses vital context.
 
@@ -99,18 +99,18 @@ if (compaction.status === "completed") continue
 const request = await request.primary({ ...context }) // fires "context" hook
 ```
 
-So `context` compression **cannot stop this step's auto-compaction**. It can lower the *next* step's measured usage (provider token counts reflect the compressed request), which may influence later thresholds indirectly. Do not promise "no more compaction."
+So `context` compression **can't stop this step's auto-compaction**. It can lower the *next* step's measured usage (provider token counts reflect the compressed request), which may influence later thresholds indirectly. Don't promise "no more compaction."
 
 **If the product goal is compression instead of compaction**, the only honest options are:
 
-1. accept compaction and use LLMLingua to reduce cost between compactions (recommended);
-2. set `compaction.auto: false` and rely on compression, accepting a one-shot overflow recovery (risky);
-3. make compression durable (`prompt` or `tool.execute.after`, both lossy and not clearly persisted);
-4. use the `compaction` hook to make compaction cheaper/better, not to avoid it.
+1. Accept compaction and use LLMLingua to reduce cost between compactions (recommended);
+2. Set `compaction.auto: false` and rely on compression, accepting a one-shot overflow recovery (risky);
+3. Make compression durable (`prompt` or `tool.execute.after`, both lossy and not clearly persisted);
+4. Use the `compaction` hook to make compaction cheaper/better, not to avoid it.
 
 ### 2.3 The reference plugin is V1-only
 
-The reference's `packages/opencode/src/plugin.ts` returns V1 hooks (`command.execute.before`, `experimental.session.compacting`, `experimental.chat.messages.transform`). **V2 does not translate these.** It loads the default export's `id` and `setup()`; a V1 `server()` implementation is ignored. The reference must be ported, not installed, on v2.1.3. Its Python pipeline and config logic can be reused behind the V2 hooks.
+The reference's `packages/opencode/src/plugin.ts` returns V1 hooks (`command.execute.before`, `experimental.session.compacting`, `experimental.chat.messages.transform`). **V2 doesn't translate these.** It loads the default export's `id` and `setup()`; a V1 `server()` implementation is ignored. The reference must be ported, not installed, on v2.1.3. Its Python pipeline and config logic can be reused behind the V2 hooks.
 
 ### 2.4 Messages are not `{info, parts}`
 
@@ -139,7 +139,7 @@ Sources: [`research/llmlingua.md`](./research/llmlingua.md), [`research/bench.md
 
 LLMLingua-2 is a **BERT-sized token classifier** trained to predict which tokens to keep. It splits text into ≤512-token chunks, scores each token, and keeps the top `rate` fraction. It is task-agnostic: `instruction`, `question`, `condition_in_question`, and `reorder_context` are accepted but ignored for LLMLingua-2. `rate=0.6` means "keep 60% of tokens," not "compress to 60% of the original size" (close, but measured 0.605–0.61).
 
-The output is reconstructed by joining word pieces with spaces. That is why punctuation, indentation, and newlines are lost. It is not a formatting-preserving editor.
+The output is reconstructed by joining word pieces with spaces. That's why punctuation, indentation, and newlines are lost. It isn't a formatting-preserving editor.
 
 ### 3.2 Measured performance (this machine)
 
@@ -162,19 +162,19 @@ Pure-JS alternative, `@atjsh/llmlingua-2@3.0.0` + `@huggingface/transformers` + 
 | BERT base (`Arcoldd/llmlingua4j-bert-base-onnx`) | 710 MB | not completed (download stalled) | — | — | Expected close to Python BERT; unverified |
 | MobileBERT | 99 MB | n/a | — | — | Transformers.js does not support `mobilebert` |
 
-The JS port is attractive for packaging (no Python, no 1.4 GB venv, MIT, browser/Node). It is also explicitly **experimental, with no unit tests**, and the TinyBERT output at `rate=0.6` turned `"./utils.js"` into `". / utils. js "`. Treat it as a phase-3 packaging option, not the first implementation.
+The JS port is attractive for packaging (no Python, no 1.4 GB venv, MIT, browser/Node). It's also explicitly **experimental, with no unit tests**, and the TinyBERT output at `rate=0.6` turned `"./utils.js"` into `". / utils. js "`. Treat it as a phase-3 packaging option, not the first implementation.
 
 ### 3.3 Quality evidence
 
 From the local benchmark (`rate=0.6`):
 
 - **TypeScript:** output had 0 newlines, 0 `{`, 0 `}`, mismatched parentheses; `tsc` failed immediately with `TS1005`. Not usable.
-- **Build log:** 5,716 chars became 4,176 chars on **one line**; timestamps and structure destroyed. Key error strings happened to survive, but line-oriented consumers cannot use it.
-- **Prose:** readable but telegraphic. Negation markers dropped from 3→2 (1k) and 23→15 (8k). Keyword presence is not task accuracy.
+- **Build log:** 5,716 chars became 4,176 chars on **one line**; timestamps and structure destroyed. Key error strings happened to survive, but line-oriented consumers can't use it.
+- **Prose:** readable but telegraphic. Negation markers dropped from 3→2 (1k) and 23→15 (8k). Keyword presence isn't task accuracy.
 
-Published evidence (LLMLingua-2 paper): good on MeetingBank-style summarization/QA, but Synthetic tasks drop ~16 points and BBH ~8 points. **There is no published study of LLMLingua-2 inside an agentic coding loop.** Our local code test is a strong negative signal.
+Published evidence (LLMLingua-2 paper): good on MeetingBank-style summarization/QA, but Synthetic tasks drop ~16 points and BBH ~8 points. **There's no published study of LLMLingua-2 inside an agentic coding loop.** Our local code test is a strong negative signal.
 
-**Conclusion:** LLMLingua is suitable for *redundant natural-language narration* and for *compaction input that an LLM will summarize anyway*. It is not suitable for code, diffs, JSON, logs, stack traces, exact identifiers, instructions, or the recent window.
+**Conclusion:** LLMLingua is suitable for *redundant natural-language narration* and for *compaction input that an LLM will summarize anyway*. It isn't suitable for code, diffs, JSON, logs, stack traces, exact identifiers, instructions, or the recent window.
 
 ---
 
@@ -182,14 +182,14 @@ Published evidence (LLMLingua-2 paper): good on MeetingBank-style summarization/
 
 ### 4.1 Principles
 
-1. **Selective, not universal.** Compress only content whose exact form does not matter.
+1. **Selective, not universal.** Compress only content whose exact form doesn't matter.
 2. **Transient by default.** Mutate the outgoing request, never persisted history. Add an explicit expand path for retrieval.
 3. **Cache the stable prefix.** Compress each message/chunk once, keyed by content hash; serve repeats synchronously.
 4. **Preserve chronology and tool pairing.** Compress in place; never reorder messages or drop a tool result without its call.
 5. **Fail open.** Any timeout, malformed output, or classifier doubt → send the original text.
 6. **Protect the tail.** The last N user turns and the current request stay verbatim.
 7. **Make savings measurable.** Record tokens in/out per stage, latency, cache hit rate, and fallbacks.
-8. **Do not break prompt caching.** The compressed prefix must be deterministic and stable across calls.
+8. **Don't break prompt caching.** The compressed prefix must be deterministic and stable across calls.
 
 ### 4.2 Three lanes
 
@@ -239,7 +239,7 @@ The request lane is the direct answer to "use LLMLingua more often": it runs aut
 | Web pages / docs / search results | **yes**, rate 0.5–0.7 | verbose natural language |
 | Tool-result prose (not logs/code) | **yes**, rate 0.6–0.8 | bulk of long context |
 
-**Hard rule:** if the classifier is not confident, do not compress. A false negative costs tokens; a false positive costs correctness.
+**Hard rule:** if the classifier isn't confident, don't compress. A false negative costs tokens; a false positive costs correctness.
 
 ### 4.4 Trigger algorithm
 
@@ -271,10 +271,10 @@ on context(event):
 Notes:
 
 - **Two watermarks:** 0.55 for free pruning, 0.70 for paid LLMLingua. This keeps normal turns latency-free.
-- **Budget-driven:** compress until the target is met, oldest first; do not compress the whole history every time.
-- **Chunk cap:** 1–2k tokens per request; 8k takes 1.6 s on CPU and is not acceptable on the critical path. Batch multiple small chunks into one worker call.
+- **Budget-driven:** compress until the target is met, oldest first; don't compress the whole history every time.
+- **Chunk cap:** 1–2k tokens per request; 8k takes 1.6 s on CPU and isn't acceptable on the critical path. Batch multiple small chunks into one worker call.
 - **Rate:** 0.8 for user prose, 0.6 for assistant/tool narration. Lower rates save more but lose negations and numbers.
-- **Token accounting:** subscribe to `session.step.ended` and use `tokens.input` (+ cache read/write as appropriate) as the measured baseline; add a character/token estimate for content appended since that step. Fall back to `chars/4` if no event has arrived. Flag the estimate in stats; do not pretend it is exact.
+- **Token accounting:** subscribe to `session.step.ended` and use `tokens.input` (+ cache read/write as appropriate) as the measured baseline; add a character/token estimate for content appended since that step. Fall back to `chars/4` if no event has arrived. Flag the estimate in stats; don't pretend it is exact.
 
 ### 4.5 Cache
 
@@ -291,9 +291,9 @@ key = sha256(
 
 - In-memory LRU (e.g. 500 entries / 32 MB) for the hot path; optional `ctx.storage` persistence for cold starts.
 - Deduplicate in-flight requests: `Map<key, Promise<string>>`.
-- Cache per **message part**, not per rolling window. Appending a tool result must not invalidate old keys.
+- Cache per **message part**, not per rolling window. Appending a tool result mustn't invalidate old keys.
 - Evict on compaction events; old prefixes are dead after history replacement.
-- Include the model/rate in the key so a config change cannot silently reuse stale output.
+- Include the model/rate in the key so a config change can't silently reuse stale output.
 - Store the original size, compressed size, and model version for stats.
 
 ### 4.6 Worker architecture
@@ -313,7 +313,7 @@ Node plugin ──JSON-lines over stdin/stdout or Unix socket──▶ python wo
 - Idle shutdown after 10–15 min to release ~0.9–1.5 GB RSS; restart on demand.
 - Hard timeout (1.2 s soft / 3 s hard), kill and restart on hang, circuit-break after repeated failures.
 - Batch all cache misses for one model call into a single request.
-- Do not load the reranker/embedder for the request lane; only the compressor. Load them only for compaction ranking if used.
+- Don't load the reranker/embedder for the request lane; only the compressor. Load them only for compaction ranking if used.
 
 **Phase 2: pure JS/ONNX option.** `@atjsh/llmlingua-2` removes Python and the 1.4 GB venv. Use BERT-base ONNX (710 MB) or an int8 variant; verify quality and latency first. TinyBERT is fast but too lossy for anything but low-value prose. This is the better end-state for distribution, but not the first milestone.
 
@@ -330,10 +330,10 @@ In both modes:
 
 - Do **not** reorder by reranker score. Keep chronological order.
 - Use the **last user request** as the query if any ranking is used, not `DEFAULT_QUERY`.
-- Do not cap to 12 messages; use a token budget.
+- Don't cap to 12 messages; use a token budget.
 - Keep paths, identifiers, error strings, decisions, and open tasks verbatim (a structured "state block" is better than hoping LLMLingua keeps them).
 - Native provider compaction (`compaction.type: "native"`) likely bypasses the hook; test before relying on it.
-- Do not disable `compaction.auto` by default. `context` compression cannot reliably prevent compaction, and an overflow triggers a one-shot recovery anyway.
+- Don't disable `compaction.auto` by default. `context` compression can't reliably prevent compaction, and an overflow triggers a one-shot recovery anyway.
 
 ### 4.8 Expand tool
 
@@ -377,13 +377,13 @@ These are starting points, not validated constants. Tune with the evaluation har
 
 Record per model call:
 
-- estimated input tokens, actual provider `tokens.input` from `session.step.ended`;
-- bytes/tokens before/after per stage (free prune, LLMLingua, fallback);
-- compression latency p50/p95, cache hit rate, worker restarts;
-- number of protected parts skipped by reason;
-- compaction count and summary size.
+- Estimated input tokens, actual provider `tokens.input` from `session.step.ended`;
+- Bytes/tokens before/after per stage (free prune, LLMLingua, fallback);
+- Compression latency p50/p95, cache hit rate, worker restarts;
+- Number of protected parts skipped by reason;
+- Compaction count and summary size.
 
-Expose `/llmlingua stats`, `/llmlingua context`, `/llmlingua on|off`, and a debug dump of before/after snippets. Do not put compressed text in logs by default (secrets).
+Expose `/llmlingua stats`, `/llmlingua context`, `/llmlingua on|off`, and a debug dump of before/after snippets. Don't put compressed text in logs by default (secrets).
 
 ---
 
@@ -396,7 +396,7 @@ A local V2 plugin is loaded from `.opencode/plugins/` or the `plugins` array:
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "/workspace/opencode-context-optimisations",
+      "package": "opencode-context-optimisations",
       "options": {
         "request": { "softRatio": 0.55, "llmlinguaRatio": 0.70 },
         "expandTool": { "enabled": true }
@@ -422,7 +422,7 @@ No slash command is required: the `context` and `compaction` hooks run automatic
 | Silent data loss | No way to recover dropped content without an expand path |
 | Compaction interaction | `context` edits cannot stop the auto decision; durable edits are lossy forever |
 
-The reference's README warning is consistent with this: smaller output, vital context missing. The fix is not a better rate; it is **not compressing the wrong content**.
+The reference's README warning is consistent with this: smaller output, vital context missing. The fix isn't a better rate; it is **not compressing the wrong content**.
 
 ### 5.1 Where the savings actually are
 
@@ -521,7 +521,7 @@ OmniRoute enforces a strict safety boundary in `lossyRequestPolicy.ts`:
   - `x-omniroute-compression: allow-lossy`
   - `x-omniroute-compression: engine:<id>`
   - `x-omniroute-compression: <combo_id>`
-- **Direct consequence:** OpenCode requests were not running LLMLingua or RTK at the gateway, despite both engines being marked `enabled: true` in OmniRoute's SQLite database.
+- **Direct consequence:** OpenCode requests weren't running LLMLingua or RTK at the gateway, despite both engines being marked `enabled: true` in OmniRoute's SQLite database.
 
 ### 7.2 Hidden hazard: Lite tool-result truncation
 
@@ -532,7 +532,7 @@ const MAX_TOOL_LENGTH = resolveLiteMaxToolLength(options.maxToolLength); // defa
 msg.content = msg.content.slice(0, cutIndex) + "\n...[truncated]";
 ```
 - **Local telemetry evidence:** Across 7,964 requests in the user's database, `lite` recorded **420,402,707 tokens saved** (37% average reduction).
-- **The catch:** This reduction is not lossless whitespace removal. It silently truncates past file reads (`read` tool) and directory scans to 2,000 characters. If an agent refers back to code read 3 turns ago, it finds `...[truncated]` and is forced to re-read the file.
+- **The catch:** This reduction isn't lossless whitespace removal. It silently truncates past file reads (`read` tool) and directory scans to 2,000 characters. If an agent refers back to code read 3 turns ago, it finds `...[truncated]` and is forced to re-read the file.
 - **Remediation:** Configure `lite.compressToolResults = false` or raise `maxToolLength` to 50,000+ characters in OmniRoute settings.
 
 ### 7.3 Live API receipts: `agy/gemini-3.8-flash-high`
@@ -620,7 +620,7 @@ To achieve maximum token savings without risking syntax errors, hallucinated lin
 
 ## 9. Implementation deliverables in this repo
 
-The codebase in `/workspace/opencode-context-optimisations` implements the core safety and policy modules for Layer 6:
+The codebase in this repository implements the core safety and policy modules for Layer 6:
 
 1. **`src/classify.ts`** — Conservative content classifier:
    - Detects code, unified diffs, JSON objects/arrays, structured logs, and empty content.
@@ -661,7 +661,7 @@ To immediately activate verified tool-result compression without code modificati
      }
    }
    ```
-   *Note: Ensure `lite.compressToolResults` is disabled if using RTK so historical file reads are not truncated.*
+   *Note: Ensure `lite.compressToolResults` is disabled if using RTK so historical file reads aren't truncated.*
 
 ### Option B: Deploy Local OpenCode LLMLingua Plugin
 To perform surgical, policy-gated LLMLingua compression inside OpenCode:
@@ -677,7 +677,7 @@ To perform surgical, policy-gated LLMLingua compression inside OpenCode:
 
 ## 11. Conclusion
 
-- **Do not blindly compress coding contexts with LLMLingua.** Token-dropping models destroy code syntax, flatten log lines, and drop negative assertions.
+- **Don't blindly compress coding contexts with LLMLingua.** Token-dropping models destroy code syntax, flatten log lines, and drop negative assertions.
 - **The biggest wins for coding agents are deterministic:** RTK bash filtering (60–80% on CLI outputs), Session-Dedup (9.3% lossless), and Headroom JSON compaction.
 - **LLMLingua belongs in a surgical, selective lane** targeting older natural-language explanations and search results, operating under strict policy gates with cache prefix protection.
 

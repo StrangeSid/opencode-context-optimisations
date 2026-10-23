@@ -16,11 +16,11 @@ All references below are `file:line` in `/tmp/ctxopt-ref` unless stated otherwis
 
 1. **Two adapters, one shared core.** `packages/core` owns config, payload shaping, the Python bridge, stats, debug/eval storage, detection and installation. `packages/opencode` and `packages/claude-code` are thin host adapters. The ML work is entirely Python (`python/context_optimizer.py`).
 2. **LLMLingua runs almost only at compaction time.** OpenCode runs it only when `experimental.session.compacting` has just flagged the session and `experimental.chat.messages.transform` fires for the summarizer. Per-turn OpenCode optimisation is pure TypeScript dedupe + error-input purge; **no Python, no LLMLingua**. Claude Code runs it in `PreCompact` (manual and auto), plus the manual `/context-optimizer:compact` command and the CLI `optimize` command.
-3. **The bridge is one-shot.** Every call spawns a new `python3 context_optimizer_cli.py`, which imports PyTorch/SentenceTransformers/LLMLingua and constructs three models from scratch, reads one JSON payload from stdin, writes one JSON result to stdout, and exits (`packages/core/src/bridge.ts:59-138`, `python/context_optimizer_cli.py:34-101`). There is no worker, no model reuse, no result cache.
+3. **The bridge is one-shot.** Every call spawns a new `python3 context_optimizer_cli.py`, which imports PyTorch/SentenceTransformers/LLMLingua and constructs three models from scratch, reads one JSON payload from stdin, writes one JSON result to stdout, and exits (`packages/core/src/bridge.ts:59-138`, `python/context_optimizer_cli.py:34-101`). There's no worker, no model reuse, no result cache.
 4. **The default compaction budget is tiny.** After ranking, dedupe and an 8,000-char budget, only `max_chunks=12` docs reach LLMLingua (`packages/core/src/config.ts:9-13`, `python/context_optimizer.py:120-155,185`). In OpenCode one doc = one whole message (`packages/opencode/src/plugin.ts:77-95`), so "12 chunks" can mean "12 messages". This quantitatively explains the README's warning that the result is much smaller but misses vital context (`README.md:12-15`).
 5. **Ranking destroys chronology.** Docs are sorted by reranker score and never restored to original order (`python/context_optimizer.py:134-136,157-166`). The query used for automatic compaction is the constant `DEFAULT_QUERY`, not the last user request (`packages/core/src/payload.ts:3,50`; `packages/opencode/src/plugin.ts:134`; `packages/claude-code/src/hook.ts:211`). Code, file contents and tool inputs are compressed too; `PROTECTED_TOOLS` only protects against TS dedupe/purge, not LLMLingua (`packages/core/src/strategies.ts:14-26`).
 6. **Accounting is chars, not tokens, and conflates stages.** `initial_size` is the sum of docs before error purge/prune; `final_size` is the compressed string. "Saved %" includes pruning, dedupe and compression, and negative savings are clamped to zero (`python/context_optimizer_cli.py:63,86`; `packages/core/src/config.ts:236-238`). Per-turn TS savings are never recorded.
-7. **Fail-open is real, but expensive.** Every adapter catches errors and leaves context untouched (`packages/opencode/src/plugin.ts:163-178,336-340`; `packages/claude-code/src/hook.ts:327-332`). But the default bridge timeout is 300,000 ms, `child.kill()` is SIGTERM only, there is no circuit breaker, and a hung model load can block a compaction for five minutes (`packages/core/src/bridge.ts:90-93`).
+7. **Fail-open is real, but expensive.** Every adapter catches errors and leaves context untouched (`packages/opencode/src/plugin.ts:163-178,336-340`; `packages/claude-code/src/hook.ts:327-332`). But the default bridge timeout is 300,000 ms, `child.kill()` is SIGTERM only, there's no circuit breaker, and a hung model load can block a compaction for five minutes (`packages/core/src/bridge.ts:90-93`).
 8. **Tests are mock-only.** Python tests inject fake `sentence_transformers`/`llmlingua`; CLI tests stub `ContextOptimizer`; JS tests fake `runOptimizer`/bridge scripts. No test loads real weights, checks compression quality, measures latency/memory, or covers timeout/concurrency (`tests/test_context_optimizer_core.py:23-86`, `tests/test_context_optimizer_cli.py:35-56`, `tests/core.test.mjs:168-173`, `tests/claude-hook.test.mjs:153-162`).
 9. **Reusable for V2:** config precedence/validation, payload/outcome shaping, TS strategy primitives, transcript/message serializers, the Python pipeline itself, the debug bundle layout, the LLM-judge evaluation rubric, and the fake-bridge test pattern.
 10. **V2 direction:** long-lived Python worker with model reuse + cache; `ctx.session.hook("context")` for cheap TS strategies plus optional bounded ML compression; `ctx.session.hook("compaction")` + `event.result` instead of the flag/splice workaround; `ctx.tool.hook("execute.after")` for incremental tool-output compression; token-aware, stage-aware stats; code-aware/preserve-order compression.
@@ -91,7 +91,7 @@ The build produces four ESM bundles (`tsup.config.ts:3-14`): `dist/index.js` (co
 
 `packages/opencode/src/plugin.ts` exports `id = "context-optimizer"` (`:113`), an async factory `ContextOptimizerPlugin` (`:115-347`), and `server`/`default` aliases (`:349-351`). The factory returns:
 
-- a `command` map with five `/context-optimizer*` commands (`:290-312`);
+- A `command` map with five `/context-optimizer*` commands (`:290-312`);
 - `command.execute.before` (`:313`) for command handling;
 - `experimental.session.compacting` (`:314-316`), which only records a timestamp for the session;
 - `experimental.chat.messages.transform` (`:317-341`), which runs TS strategies on every turn and, if the session was just flagged, replaces the summarizer's messages with the Python result.
@@ -103,12 +103,12 @@ Two important implementation details:
 
 `messagesToDocs` (`:77-95`) flattens the session into one doc per message:
 
-- role prefix: `[User]` only for `info.role === "user"`, everything else `[Assistant]` (`:80`);
-- text and reasoning parts if `part.text && !part.ignored` (`:83-84`);
-- tool parts: `[tool <name>] <JSON input>` (`:85-86`);
-- completed tool output (untruncated) (`:87`);
-- error line `[error] <error>` (`:88`);
-- empty messages skipped (`:91-92`).
+- Role prefix: `[User]` only for `info.role === "user"`, everything else `[Assistant]` (`:80`);
+- Text and reasoning parts if `part.text && !part.ignored` (`:83-84`);
+- Tool parts: `[tool <name>] <JSON input>` (`:85-86`);
+- Completed tool output (untruncated) (`:87`);
+- Error line `[error] <error>` (`:88`);
+- Empty messages skipped (`:91-92`).
 
 Commands are handled by `command` (`:181-288`). `context` reads the session via `dependencies.client.session.messages` (`:199-205`) and returns counts; `stats` returns the CSV table; `compact` runs one optimization pass and prints the JSON result without changing the session (`:222-236`); `config` supports show/get/set/reset (`:238-285`). Replies mutate the host's `output.parts` and set `output.noReply = true` (`:192-197`).
 
@@ -117,10 +117,10 @@ Commands are handled by `command` (`:181-288`). `context` reads the session via 
 `packages/claude-code/src/hook.ts` is a standalone Node script invoked as `node claude-hook.mjs <mode>` (`packages/core/src/install.ts:129-141`). It reads one JSON object from stdin (`:52-56,313-320`) and supports:
 
 - **`precompact`** (`:184-258`): parse the transcript (`transcriptToDocs`, `:93-160`), skip if no transcript/docs/size below `min_chars`, run the bridge, then:
-  - debug mode: save the plugin result only; native compaction proceeds (`:224-228`);
-  - manual `/compact`: on success write a project-keyed hand-off file and exit 2 to block Claude's compaction; the user must run `/clear` (`:233-243`);
-  - auto-compact: on success write a session-keyed hand-off file and let Claude's compaction proceed; the optimized context is injected next to the native summary (`:245-257`).
-- **`sessionstart`** (`:269-298`): for `source === "compact"` consume the session hand-off and outcome report; for `source === "clear"` consume the project hand-off; inject `## Optimized Context` as `additionalContext` and show the outcome as `systemMessage` (which does not enter context).
+  - Debug mode: save the plugin result only; native compaction proceeds (`:224-228`);
+  - Manual `/compact`: on success write a project-keyed hand-off file and exit 2 to block Claude's compaction; the user must run `/clear` (`:233-243`);
+  - Auto-compact: on success write a session-keyed hand-off file and let Claude's compaction proceed; the optimized context is injected next to the native summary (`:245-257`).
+- **`sessionstart`** (`:269-298`): for `source === "compact"` consume the session hand-off and outcome report; for `source === "clear"` consume the project hand-off; inject `## Optimized Context` as `additionalContext` and show the outcome as `systemMessage` (which doesn't enter context).
 - **`postcompact`** (`:300-311`): only in debug mode; capture `compact_summary` next to the plugin result, write `native.txt`, update `meta.json`/`index.md`, print a report to stderr and exit 2.
 
 Hand-off files live under `~/.context-optimizer/claude-sessions/` (`packages/core/src/paths.ts:31-33`). A `/clear` hand-off expires after 1 hour (`hook.ts:182,263`); stale files are consumed and dropped (`:281-285`). SessionStart output shape is `{systemMessage?, hookSpecificOutput:{hookEventName:"SessionStart", additionalContext}}` (`:288-297`).
@@ -144,13 +144,13 @@ The adapter's `transcriptToDocs` (`:93-160`) differs from OpenCode:
 
 `python/context_optimizer_cli.py` is the bridge process (`:34-101`):
 
-- reads all stdin bytes and decodes UTF-8 explicitly (`:40`);
-- parses JSON (`:41-45`);
-- validates `docs` is a list of strings (`:51-59`);
-- computes `initial_size` as the sum of all doc lengths (`:63`);
-- enforces `min_input_size` if present and an int (`:64-76`);
-- pops `min_input_size`, constructs `ContextOptimizer(**options)`, calls `optimize(query, docs)` (`:78-88`);
-- emits `{ok:true, optimized_context, initial_size, final_size}` or a structured error (`:90-97`, `:7-21`).
+- Reads all stdin bytes and decodes UTF-8 explicitly (`:40`);
+- Parses JSON (`:41-45`);
+- Validates `docs` is a list of strings (`:51-59`);
+- Computes `initial_size` as the sum of all doc lengths (`:63`);
+- Enforces `min_input_size` if present and an int (`:64-76`);
+- Pops `min_input_size`, constructs `ContextOptimizer(**options)`, calls `optimize(query, docs)` (`:78-88`);
+- Emits `{ok:true, optimized_context, initial_size, final_size}` or a structured error (`:90-97`, `:7-21`).
 
 The installer copies all `python/*.py` to `~/.context-optimizer/python/` (`packages/core/src/install.ts:65-74`), which is the default `CONTEXT_OPTIMIZER_CLI` path (`packages/core/src/paths.ts:26-28`).
 
@@ -233,8 +233,8 @@ stdin JSON -> runOptimizer -> Python -> stdout normalized JSON
 - **Script:** `CONTEXT_OPTIMIZER_CLI` if set, else `~/.context-optimizer/python/context_optimizer_cli.py` (`packages/core/src/paths.ts:26-28`).
 - **Spawn:** `child_process.spawn(python[0], [...python.slice(1), cliPath], {stdio:["pipe","pipe","pipe"]})` (`bridge.ts:77-79`).
 - **Request write:** `JSON.stringify(mergedPayload)` to stdin, then `stdin.end()` (`bridge.ts:126-131`). No newline framing, no request id, no length prefix.
-- **Response read:** stdout is accumulated as a string until `close`, then `JSON.parse` (`bridge.ts:95-97,113-124`). stderr is accumulated separately (`:99-101`) and only appended to the error message if stdout parsing fails (`:118-122`).
-- **Exit:** Python writes one JSON object, flushes, and raises `SystemExit` (`context_optimizer_cli.py:7-10`). Success/no-op exit 0; errors exit 1 (`:13-21`). **The TS side does not inspect the exit code**; it parses stdout regardless (`bridge.ts:113-124`).
+- **Response read:** stdout is accumulated as a string until `close`, then `JSON.parse` (`bridge.ts:95-97,113-124`). Stderr is accumulated separately (`:99-101`) and only appended to the error message if stdout parsing fails (`:118-122`).
+- **Exit:** Python writes one JSON object, flushes, and raises `SystemExit` (`context_optimizer_cli.py:7-10`). Success/no-op exit 0; errors exit 1 (`:13-21`). **The TS side doesn't inspect the exit code**; it parses stdout regardless (`bridge.ts:113-124`).
 - **Concurrency:** one child per call. No pool, no semaphore, no queue. Multiple sessions can spawn multiple Python processes, each loading three models.
 
 ### 2.2 Request payload (stdin)
@@ -276,9 +276,9 @@ The canonical shape is `OptimizerPayload` (`packages/core/src/payload.ts:5-11`):
 
 **Important:** `model_limits` is only applied by `buildPayload`. The Claude `precompact` path and the CLI `optimize` path construct payloads manually and never call `buildPayload` (`packages/claude-code/src/hook.ts:209-217`; `packages/core/src/cli.ts:158-167`). So `model_limits` and `auto_compression_chars` are effectively **OpenCode-only** in this version.
 
-**No `min_input_size` by default:** OpenCode automatic compaction adds it (`plugin.ts:153-160`), the OpenCode `/compact` command adds it (`:224-232`), and Claude adds it (`hook.ts:209-217`). The CLI `optimize` does not (`cli.ts:158-167`), so a direct CLI payload below the threshold still runs unless the caller includes it.
+**No `min_input_size` by default:** OpenCode automatic compaction adds it (`plugin.ts:153-160`), the OpenCode `/compact` command adds it (`:224-232`), and Claude adds it (`hook.ts:209-217`). The CLI `optimize` doesn't (`cli.ts:158-167`), so a direct CLI payload below the threshold still runs unless the caller includes it.
 
-**Unknown option keys are fatal:** after popping `min_input_size`, the remaining `options` are splatted into `ContextOptimizer(**options)` (`context_optimizer_cli.py:80-82`). A typo or an extra key in `model_limits` raises `TypeError`, which is caught and emitted as `runtime_error`; the whole optimization is lost. There is no schema validation.
+**Unknown option keys are fatal:** after popping `min_input_size`, the remaining `options` are splatted into `ContextOptimizer(**options)` (`context_optimizer_cli.py:80-82`). A typo or an extra key in `model_limits` raises `TypeError`, which is caught and emitted as `runtime_error`; the whole optimization is lost. There's no schema validation.
 
 ### 2.3 Response payload (stdout)
 
@@ -358,21 +358,21 @@ There is no distinct code for model-download failure, CUDA OOM, cancellation, or
 - **Default:** `DEFAULT_TIMEOUT_MS = 300000` (5 minutes) (`config.ts:7`), resolved per call (`bridge.ts:63`), env-overridable via `CONTEXT_OPTIMIZER_TIMEOUT_MS`.
 - **Implementation:** `setTimeout(() => { child.kill(); finish({ok:false,errorCode:"timeout",...}) }, timeoutMs)` (`bridge.ts:90-93`).
 - **No SIGKILL escalation:** `child.kill()` sends SIGTERM. If Python is inside a native PyTorch/CUDA call and ignores SIGTERM, the promise resolves but the child may linger; for the CLI/hook process, the child handle can keep the event loop alive.
-- **No AbortSignal:** `runOptimizer` exposes only `timeoutMs` (`bridge.ts:51-56`); host cancellation/user interrupt is not propagated.
-- **Host-level timeout:** Claude Code/OpenCode may impose their own hook/plugin timeouts outside this repo. The bridge's 5-minute default can exceed those, in which case the host kills the hook and the fail-open path never runs. The repo does not configure host timeouts.
+- **No AbortSignal:** `runOptimizer` exposes only `timeoutMs` (`bridge.ts:51-56`); host cancellation/user interrupt isn't propagated.
+- **Host-level timeout:** Claude Code/OpenCode may impose their own hook/plugin timeouts outside this repo. The bridge's 5-minute default can exceed those, in which case the host kills the hook and the fail-open path never runs. The repo doesn't configure host timeouts.
 - **Timer scope:** cleared on `error` and `close` (`bridge.ts:104,114`); a `settled` guard prevents double resolution (`:82-88`).
 - **Per-call override:** `runOptimizer({timeoutMs})` is supported but no adapter passes it; all use the config default.
 
 ### 2.6 Protocol fragility / sharp edges
 
-1. **stdout must be pure JSON.** Any library warning/progress printed to stdout makes `JSON.parse` fail and turns a successful compression into `runtime_error` (`bridge.ts:17-18,113-124`). Python logs go to stderr (`context_optimizer.py:5-10`), but third-party libraries are not controlled.
+1. **stdout must be pure JSON.** Any library warning/progress printed to stdout makes `JSON.parse` fail and turns a successful compression into `runtime_error` (`bridge.ts:17-18,113-124`). Python logs go to stderr (`context_optimizer.py:5-10`), but third-party libraries aren't controlled.
 2. **Exit code ignored.** A Python traceback with a valid partial JSON object on stdout would be treated as success; an exit 1 with valid JSON is also accepted (`bridge.ts:113-124`).
-3. **No request id / schema version.** Cannot correlate responses, detect version skew, or safely add fields. The payload is a bare object.
-4. **Huge payloads are buffered in memory.** `JSON.stringify(mergedPayload)` and Python `sys.stdin.buffer.read()` hold the entire request; OpenCode includes untruncated tool inputs/outputs (`plugin.ts:86-88`). There is no max size.
-5. **No streaming.** The child produces nothing until the final JSON; the parent cannot show progress or cancel cleanly.
+3. **No request id / schema version.** Can't correlate responses, detect version skew, or safely add fields. The payload is a bare object.
+4. **Huge payloads are buffered in memory.** `JSON.stringify(mergedPayload)` and Python `sys.stdin.buffer.read()` hold the entire request; OpenCode includes untruncated tool inputs/outputs (`plugin.ts:86-88`). There's no max size.
+5. **No streaming.** The child produces nothing until the final JSON; the parent can't show progress or cancel cleanly.
 6. **stderr accumulation is unbounded** (`bridge.ts:99-101`); model download/progress bars can consume memory.
 7. **`warnOnce` is an unbounded in-process Set** keyed by session+message (`bridge.ts:39-49`); long-lived OpenCode servers accumulate keys.
-8. **`CONTEXT_OPTIMIZER_PYTHON` cannot contain arguments** (e.g. `"python3 -u"`); it is used as argv[0] (`bridge.ts:10-12`).
+8. **`CONTEXT_OPTIMIZER_PYTHON` can't contain arguments** (e.g. `"python3 -u"`); it is used as argv[0] (`bridge.ts:10-12`).
 9. **No environment hardening:** no `PYTHONUNBUFFERED`, `HF_HOME`, `OMP_NUM_THREADS`, `CUDA_VISIBLE_DEVICES`, or offline flags are set; the child inherits the host environment.
 10. **Python import errors are only partly caught.** The CLI catches `ModuleNotFoundError` (`context_optimizer_cli.py:24-31`), but `context_optimizer.py` imports `sentence_transformers` and `llmlingua` at module top before its optional torch guard (`context_optimizer.py:1-16`). A broken CUDA/torch install that raises `OSError`/`ImportError` instead of `ModuleNotFoundError` produces a traceback and no JSON.
 
@@ -416,13 +416,13 @@ Within `buildPayload`, `output.options` wins over `input.options` (`payload.ts:2
 
 ### 3.3 Validation quirks
 
-- `parseConfigValue` rejects any numeric value `<= 0` (`config.ts:196-199`). This means `config set compression_rate 0` and `config set dedupe_threshold 0` are rejected even though the documented range is 0–1 (`README.md:203-205`), and `auto_compression_chars` cannot be set to 0 via the CLI even though the resolver clamps it to >=0 (`config.ts:135-143`).
+- `parseConfigValue` rejects any numeric value `<= 0` (`config.ts:196-199`). This means `config set compression_rate 0` and `config set dedupe_threshold 0` are rejected even though the documented range is 0–1 (`README.md:203-205`), and `auto_compression_chars` can't be set to 0 via the CLI even though the resolver clamps it to >=0 (`config.ts:135-143`).
 - Env/stored values bypass `parseConfigValue`: negative or out-of-range values are accepted by `resolveEffectiveConfig` (only `max_chunks`, `total_prune_budget_chars`, `auto_compression_chars` are rounded/clamped). A negative `timeout_ms` becomes an immediate timer; a negative `compression_rate` reaches LLMLingua and fails; `dedupe_threshold > 1` disables dedupe.
 - `max_chunks` is rounded in JS (`config.ts:112-121`), and `parseConfigValue` requires an integer (`:201-203`). `total_prune_budget_chars` is rounded in JS but not required to be an integer by `parseConfigValue`.
-- `model_limits` values are not validated at all. Arbitrary keys are forwarded to `ContextOptimizer(**kwargs)` and can cause `TypeError`.
+- `model_limits` values aren't validated at all. Arbitrary keys are forwarded to `ContextOptimizer(**kwargs)` and can cause `TypeError`.
 - Config writes are direct `writeFileSync` with no temp-file/rename (`config.ts:82-86`); concurrent config commands can corrupt the file.
 - `readStoredConfig` silently returns `{}` on parse/read errors (`config.ts:74-80`); a malformed config file is silently ignored rather than reported.
-- The CSV header is written only if the file does not exist (`config.ts:251-252`); concurrent first writes can duplicate the header. Rows are appended without locking (`:252`).
+- The CSV header is written only if the file doesn't exist (`config.ts:251-252`); concurrent first writes can duplicate the header. Rows are appended without locking (`:252`).
 
 ---
 
@@ -451,16 +451,16 @@ Within `buildPayload`, `output.options` wins over `input.options` (`payload.ts:2
 3. The transform always runs `applyOptimizationStrategies` first (`plugin.ts:319-327`). This mutates tool parts in place: older duplicate completed outputs become `OPTIMIZED_OUTPUT_MARKER`; old errored call inputs become `OPTIMIZED_ERROR_INPUT_MARKER` (`opencode/strategies.ts:45-91`).
 4. The transform reads `sessionID` from `messages[0]?.info?.sessionID`, looks up the flag, deletes it, and rejects it if older than 10 s (`plugin.ts:329-334`).
 5. `optimizeCompaction` (`:131-179`):
-   - finds the last user message (`:133`);
-   - builds docs from **all** messages (`:134`);
-   - reads `min_chars` (`:135`);
-   - returns early if no last user or no docs (`:137-140`);
-   - returns early if `payload.size < min_chars` (`:142-147`);
-   - logs doc count/size (`:149-151`);
-   - calls `runOptimizer` with `options: {min_input_size: minChars, ...payload.options}` (`:153-160`);
-   - logs the outcome (`:162`);
-   - on `ok && optimizedContext`: records stats (`:165`) and splices the messages down to one user message containing `## Optimized Context\n\n<text>` (`:167-170`), then shows a toast (`:171`);
-   - on failure: shows an error toast (`:172-178`), leaving messages untouched.
+   - Finds the last user message (`:133`);
+   - Builds docs from **all** messages (`:134`);
+   - Reads `min_chars` (`:135`);
+   - Returns early if no last user or no docs (`:137-140`);
+   - Returns early if `payload.size < min_chars` (`:142-147`);
+   - Logs doc count/size (`:149-151`);
+   - Calls `runOptimizer` with `options: {min_input_size: minChars, ...payload.options}` (`:153-160`);
+   - Logs the outcome (`:162`);
+   - On `ok && optimizedContext`: records stats (`:165`) and splices the messages down to one user message containing `## Optimized Context\n\n<text>` (`:167-170`), then shows a toast (`:171`);
+   - On failure: shows an error toast (`:172-178`), leaving messages untouched.
 6. OpenCode's summarizer then summarizes the single optimized message. **LLMLingua output is the summarizer's input, not the final compacted context.** There is still an LLM summary call, so the content is lossy twice.
 
 ### 4.3 OpenCode per-turn: no LLMLingua
@@ -475,13 +475,13 @@ This is the only "per-turn optimization". It never calls Python, never uses embe
 
 ### 4.4 Claude Code: PreCompact only
 
-`precompact` (`hook.ts:184-258`) always calls the bridge when the transcript is large enough, regardless of manual/auto, except that debug mode still computes but does not use the result (`:224-228`). The transcript conversion (`:93-160`) applies TS strategies at transcript level, not per turn:
+`precompact` (`hook.ts:184-258`) always calls the bridge when the transcript is large enough, regardless of manual/auto, except that debug mode still computes but doesn't use the result (`:224-228`). The transcript conversion (`:93-160`) applies TS strategies at transcript level, not per turn:
 
-- dedupe: newest result per tool signature wins; older results are **dropped**, not marked (`:142-157`);
-- purge: errored tool results older than 4 user turns are **dropped entirely** (`:154`), unlike OpenCode which keeps the error output;
-- protected tools are kept (`:152`);
-- each tool result is truncated to 2,000 chars (`:72,124`);
-- only the last 200 docs are kept (`:41,159`).
+- Dedupe: newest result per tool signature wins; older results are **dropped**, not marked (`:142-157`);
+- Purge: errored tool results older than 4 user turns are **dropped entirely** (`:154`), unlike OpenCode which keeps the error output;
+- Protected tools are kept (`:152`);
+- Each tool result is truncated to 2,000 chars (`:72,124`);
+- Only the last 200 docs are kept (`:41,159`).
 
 There is no Claude hook that rewrites the live conversation. The README says this explicitly (`README.md:133-138`). So Claude gets LLMLingua only at compaction, plus the manual slash command and CLI.
 
@@ -489,23 +489,23 @@ There is no Claude hook that rewrites the live conversation. The README says thi
 
 **OpenCode (`messagesToDocs`, `plugin.ts:77-95`):**
 
-- all `text` and `reasoning` parts (unless `part.ignored`) with `[User]`/`[Assistant]` prefix;
-- all tool inputs as compact JSON (`[tool name] {...}`), including full `write`/`edit` content;
-- all completed tool outputs, untruncated;
-- error lines for errored tools (`[error] ...`);
-- one doc per message, joined with newlines.
+- All `text` and `reasoning` parts (unless `part.ignored`) with `[User]`/`[Assistant]` prefix;
+- All tool inputs as compact JSON (`[tool name] {...}`), including full `write`/`edit` content;
+- All completed tool outputs, untruncated;
+- Error lines for errored tools (`[error] ...`);
+- One doc per message, joined with newlines.
 
 **Claude (`transcriptToDocs`, `hook.ts:93-160`):**
 
-- every text block in the transcript;
-- every tool result as `[tool name] <first 2000 chars>`;
-- no tool inputs;
-- deduped/purged/protected as above;
-- last 200 docs.
+- Every text block in the transcript;
+- Every tool result as `[tool name] <first 2000 chars>`;
+- No tool inputs;
+- Deduped/purged/protected as above;
+- Last 200 docs.
 
 **Python pipeline:** all docs are normalized, error-prefixed docs are dropped, then embedder prefilter -> reranker -> dedupe -> char budget -> slice -> LLMLingua. The compressor sees the surviving docs as a list; LLMLingua joins them (the tests' fake joins with `\n\n`, `tests/test_context_optimizer_core.py:61-63`).
 
-**Protected tools are not protected from LLMLingua.** `PROTECTED_TOOLS` (`core/strategies.ts:14-26`) only guards the TS dedupe/purge passes. `messagesToDocs` and `transcriptToDocs` still include `write`, `edit`, `task`, etc., and Python compresses them. This is a critical distinction.
+**Protected tools aren't protected from LLMLingua.** `PROTECTED_TOOLS` (`core/strategies.ts:14-26`) only guards the TS dedupe/purge passes. `messagesToDocs` and `transcriptToDocs` still include `write`, `edit`, `task`, etc., and Python compresses them. This is a critical distinction.
 
 ### 4.6 What is skipped
 
@@ -523,16 +523,16 @@ There is no Claude hook that rewrites the live conversation. The README says thi
 
 With defaults:
 
-- prefilter cap: `max(40, 12*4) = 48` docs (`context_optimizer.py:127`);
-- reranker scores those 48;
-- dedupe drops near-duplicates at cosine >= 0.9;
-- char budget: 8,000 chars total (`config.ts:12`);
+- Prefilter cap: `max(40, 12*4) = 48` docs (`context_optimizer.py:127`);
+- Reranker scores those 48;
+- Dedupe drops near-duplicates at cosine >= 0.9;
+- Char budget: 8,000 chars total (`config.ts:12`);
 - `max_chunks`: 12 docs (`config.ts:10`);
 - LLMLingua `rate=0.6` keeps ~60% of the tokens it sees (`config.ts:9`).
 
 So the compressor normally sees at most 8,000 chars / 12 docs, except that one oversized high-value doc can exceed the budget (`context_optimizer.py:145-150`). It emits roughly 60% of the tokens it sees; the resulting char count is approximate and often lower. In OpenCode a doc is an entire message, so a 100-message session is reduced to at most 12 messages before compression, and the 8,000-char budget may cut that to 2–4 messages. The native summarizer would see the whole transcript. This is exactly the trade-off the README warns about (`README.md:12-15,34,142`).
 
-Illustrative example (not measured): 200,000 chars of session -> prefilter 48 docs -> rerank/dedupe -> 8,000 chars -> 12 docs -> LLMLingua keeps ~60% of the tokens in that ~8,000-char slice (chars are approximate). Stats report `(200000-4800)/200000 = 97.6% saved`, but LLMLingua's own ratio applies only to the ~8,000 chars it saw; most of the "saving" is pruning. This is why `% saved` in stats is not a compression-quality metric.
+Illustrative example (not measured): 200,000 chars of session -> prefilter 48 docs -> rerank/dedupe -> 8,000 chars -> 12 docs -> LLMLingua keeps ~60% of the tokens in that ~8,000-char slice (chars are approximate). Stats report `(200000-4800)/200000 = 97.6% saved`, but LLMLingua's own ratio applies only to the ~8,000 chars it saw; most of the "saving" is pruning. This is why `% saved` in stats isn't a compression-quality metric.
 
 ### 4.8 Why the README warning is expected
 
@@ -561,15 +561,15 @@ The repo's own review quotes in `README.md:45-55` are more optimistic, but the a
 
 **Consequences:**
 
-- **Fixed cost paid on every compaction.** Model weights are read from disk into RAM/VRAM and initialized each time. The installer's warm-up (`install.ts:76-86`) only populates the Hugging Face disk cache; it does not keep a process or models alive. A "warm" run still pays import + checkpoint load.
+- **Fixed cost paid on every compaction.** Model weights are read from disk into RAM/VRAM and initialized each time. The installer's warm-up (`install.ts:76-86`) only populates the Hugging Face disk cache; it doesn't keep a process or models alive. A "warm" run still pays import + checkpoint load.
 - **No warm start for automatic compression.** If LLMLingua were called per turn, the user would pay this cost on every message. This is the primary blocker for per-turn use.
 - **The 5-minute timeout hides the cost.** `DEFAULT_TIMEOUT_MS=300000` (`config.ts:7`) is large enough that a slow CPU load can look like a hang; users see no progress because stdout is silent until the final JSON.
-- **Concurrency multiplies memory.** Two sessions compacting at once spawn two Python processes, each loading reranker + embedder + compressor. On a GPU this can OOM; on CPU it can thrash. There is no global semaphore or queue (`bridge.ts:59-138`).
-- **No process reuse / health check.** A crashed Python process is not restarted or quarantined; the next call simply spawns again. A repeated dependency failure pays the spawn/import cost every time.
-- **No cancellation.** A user interrupt does not kill the child; only the 300 s timer does, and only with SIGTERM (`bridge.ts:90-93`).
+- **Concurrency multiplies memory.** Two sessions compacting at once spawn two Python processes, each loading reranker + embedder + compressor. On a GPU this can OOM; on CPU it can thrash. There's no global semaphore or queue (`bridge.ts:59-138`).
+- **No process reuse / health check.** A crashed Python process isn't restarted or quarantined; the next call simply spawns again. A repeated dependency failure pays the spawn/import cost every time.
+- **No cancellation.** A user interrupt doesn't kill the child; only the 300 s timer does, and only with SIGTERM (`bridge.ts:90-93`).
 - **No model selection by workload.** The same three models load even for a tiny 2,000-char compaction or a request that will be discarded by `max_chunks`.
 
-**What "more often" requires:** a long-lived worker (or a small pool with concurrency 1) that constructs `ContextOptimizer` once, keeps models resident, handles many JSON requests, and exposes health/readiness. Keep the one-shot CLI as a fallback for `optimize`/portability, but do not use it for per-turn hooks.
+**What "more often" requires:** a long-lived worker (or a small pool with concurrency 1) that constructs `ContextOptimizer` once, keeps models resident, handles many JSON requests, and exposes health/readiness. Keep the one-shot CLI as a fallback for `optimize`/portability. But don't use it for per-turn hooks.
 
 ### 5.2 Three separate heavy models, initialization order and failure coupling
 
@@ -581,38 +581,38 @@ The repo's own review quotes in `README.md:45-55` are more optimistic, but the a
 
 **Risks:**
 
-- **All-or-nothing loading.** If the reranker fails to load (OOM, missing weights, offline), the constructor raises before the compressor is created, so no compression happens at all. There is no staged degradation (e.g., skip rerank and compress the pruned docs, or skip compression and return pruned docs). The same applies if `PromptCompressor` fails: the already-loaded reranker/embedder work is wasted.
-- **Sequential latency.** Loads are synchronous; time-to-first-result is the sum of all three. There is no parallel loading, lazy loading, or background warm-up inside the bridge.
-- **Memory pressure.** All three stay resident for the life of the process. On CUDA, xlm-roberta-large + bge-reranker-large + embedder can be several GB; with concurrent processes this is a real OOM risk. There is no dtype/quantization/`low_cpu_mem_usage`/`empty_cache`.
-- **Embedder does double work.** `_prefilter` encodes all docs plus the query (`:114-116`), then `dedupe` re-encodes the ranked subset (`:82`). The same model runs twice per optimization; embeddings are not cached.
-- **Reranker does a full forward pass per (query, doc) pair** (`:129`). With the 48-doc cap this is bounded, but it dominates CPU latency; there is no batch-size control, no score cache, and no fallback to embedder-only ranking.
-- **Compressor is not optional.** Even if LLMLingua is the only thing you want, the pipeline insists on loading reranker + embedder first. For per-turn tool-output compression, the compressor alone would suffice; loading all three is wasteful.
-- **Device default is global.** `torch.cuda.is_available()` decides the device for all three (`:30`); there is no per-model device or CPU-offload policy. An explicit `compressor_model` does not change the device.
+- **All-or-nothing loading.** If the reranker fails to load (OOM, missing weights, offline), the constructor raises before the compressor is created, so no compression happens at all. There's no staged degradation (e.g., skip rerank and compress the pruned docs, or skip compression and return pruned docs). The same applies if `PromptCompressor` fails: the already-loaded reranker/embedder work is wasted.
+- **Sequential latency.** Loads are synchronous; time-to-first-result is the sum of all three. There's no parallel loading, lazy loading, or background warm-up inside the bridge.
+- **Memory pressure.** All three stay resident for the life of the process. On CUDA, xlm-roberta-large + bge-reranker-large + embedder can be several GB; with concurrent processes this is a real OOM risk. There's no dtype/quantization/`low_cpu_mem_usage`/`empty_cache`.
+- **Embedder does double work.** `_prefilter` encodes all docs plus the query (`:114-116`), then `dedupe` re-encodes the ranked subset (`:82`). The same model runs twice per optimization; embeddings aren't cached.
+- **Reranker does a full forward pass per (query, doc) pair** (`:129`). With the 48-doc cap this is bounded, but it dominates CPU latency; there's no batch-size control, no score cache, and no fallback to embedder-only ranking.
+- **Compressor isn't optional.** Even if LLMLingua is the only thing you want, the pipeline insists on loading reranker + embedder first. For per-turn tool-output compression, the compressor alone would suffice; loading all three is wasteful.
+- **Device default is global.** `torch.cuda.is_available()` decides the device for all three (`:30`); there's no per-model device or CPU-offload policy. An explicit `compressor_model` doesn't change the device.
 
 **Design implication:** split the runtime into optional stages/workers:
 
 - `rank` worker: embedder + reranker for compaction;
 - `compress` worker: LLMLingua only for tool outputs/per-turn;
-- lazy-load each stage on first use; if a stage is unavailable, fall back to the previous stage's output (pruned docs, recency order, or raw text);
-- warm the compressor in the background at plugin start, but do not block the first turn.
+- Lazy-load each stage on first use; if a stage is unavailable, fall back to the previous stage's output (pruned docs, recency order, or raw text);
+- Warm the compressor in the background at plugin start, but don't block the first turn.
 
 ### 5.3 Compaction-only usage vs per-turn; no incremental compression; no caching
 
-**Current usage is compaction-centric.** The only automatic LLMLingua path is OpenCode compaction (`plugin.ts:314-341`) and Claude PreCompact (`hook.ts:184-258`). Normal turns get TS dedupe/purge only. There is no threshold-triggered automatic compression when the context grows; `auto_compression_chars` is just a `model_limits` gate (`payload.ts:42`), not an auto-compress trigger.
+**Current usage is compaction-centric.** The only automatic LLMLingua path is OpenCode compaction (`plugin.ts:314-341`) and Claude PreCompact (`hook.ts:184-258`). Normal turns get TS dedupe/purge only. There's no threshold-triggered automatic compression when the context grows; `auto_compression_chars` is just a `model_limits` gate (`payload.ts:42`), not an auto-compress trigger.
 
 **No incremental compression.** Every compaction sends the whole current doc set through the full pipeline:
 
-- no content-addressed cache of compressed docs;
-- no reuse of embeddings, reranker scores, or LLMLingua outputs;
-- no "only compress the new/changed messages since last compaction" path;
-- no session-level map of part hash -> compressed text;
-- no cross-session cache for stable content (e.g., the same file read in many sessions).
+- No content-addressed cache of compressed docs;
+- No reuse of embeddings, reranker scores, or LLMLingua outputs;
+- No "only compress the new/changed messages since last compaction" path;
+- No session-level map of part hash -> compressed text;
+- No cross-session cache for stable content (e.g., the same file read in many sessions).
 
 **Repeated compaction degrades.** In OpenCode, after a compaction the session continues from the summarized text; the next compaction includes that summary in `messagesToDocs` and may compress it again. In Claude manual mode, `/clear` starts from the optimized text; the next compaction includes it and compresses again. Each pass is lossy; without a cache or "already compressed" marker, content can be eroded repeatedly.
 
 **TS strategies are the only incremental part.** Dedupe markers persist in the message parts and are skipped on later runs (`opencode/strategies.ts:51`), so dedupe/purge are idempotent and incremental-ish. LLMLingua has no equivalent.
 
-**No background/precompute.** The plugin does not compress while idle, does not precompute a compacted context, and does not overlap model load with the user's turn. Every compaction is a cold, synchronous request.
+**No background/precompute.** The plugin doesn't compress while idle, doesn't precompute a compacted context, and doesn't overlap model load with the user's turn. Every compaction is a cold, synchronous request.
 
 **No cache invalidation model.** If a cache were added, keys must include model name, compression rate, code version, and content hash; none of that exists today.
 
@@ -622,7 +622,7 @@ The repo's own review quotes in `README.md:45-55` are more optimistic, but the a
 
 - OpenCode per-turn strategies mutate `part.state.output` and `part.state.input` in place (`opencode/strategies.ts:62,83`). The tests assert the mutation (`tests/opencode-strategies.test.mjs:34,49-50,70-72`).
 - The compaction path splices the host's `messages` array in place (`plugin.ts:167-170`). The comment says the host keeps its own reference (`:166`), which implies the array may be the one OpenCode uses/persists, not a disposable copy.
-- **Risk:** if these objects are persisted, the original tool outputs/inputs are gone permanently. There is no raw backup for OpenCode markers (Claude debug mode saves plugin/native text, not per-part originals). A bug in dedupe or a wrong protected-tool decision becomes irreversible data loss in the session store.
+- **Risk:** if these objects are persisted, the original tool outputs/inputs are gone permanently. There's no raw backup for OpenCode markers (Claude debug mode saves plugin/native text, not per-part originals). A bug in dedupe or a wrong protected-tool decision becomes irreversible data loss in the session store.
 - **Risk:** replacing `messages` with a single user message during a normal turn (if the 10 s flag fires at the wrong time) would replace the live conversation, not just the summarizer input. The flag is only TTL-guarded, not tied to a specific compaction event (`plugin.ts:128-129,329-334`). If compaction is canceled and the user sends a message within 10 s, `optimizeCompaction` can run on that normal turn and splice it.
 - **Risk:** non-string tool outputs. `deduplicate` assigns a string marker to `state.output` regardless of its original type (`opencode/strategies.ts:62`); a host/UI expecting an object/array may break. `purgeErrors` only replaces string-valued keys and leaves non-strings, so input shape becomes mixed (`:81-85`).
 - **Risk:** marker text is an assertion ("information superseded or no longer needed") that may be false; the model sees it as content. Markers are English-only and coupled by exact string equality; if the host truncates or rewrites them, idempotence breaks.
@@ -638,9 +638,9 @@ task, skill, todowrite, todoread, batch, plan_enter, plan_exit, write, edit, pat
 ```
 
 - Matching is lowercased (`:28-30`), so case variants are covered.
-- **Not protected:** `read`, `bash`, `grep`, `glob`, `webfetch`, `mcp__*`, `apply_patch`, `multiedit`, and any host-specific tools. `read` dedupe is intentional (same file read twice -> older output dropped), but `bash` with the same command in a different cwd/env can be a false duplicate. `mcp__*` tools can have side effects and are not covered by the policy.
+- **Not protected:** `read`, `bash`, `grep`, `glob`, `webfetch`, `mcp__*`, `apply_patch`, `multiedit`, and any host-specific tools. `read` dedupe is intentional (same file read twice -> older output dropped), but `bash` with the same command in a different cwd/env can be a false duplicate. `mcp__*` tools can have side effects and aren't covered by the policy.
 - **Protected only against TS strategies.** Python still receives `write`/`edit`/`task` content and compresses it (`plugin.ts:134`; `hook.ts:133`; `context_optimizer.py:161-164`). If the goal is "never compress write/edit payloads", the protection must be applied when building docs, not only in dedupe.
-- The list is hard-coded, not configurable. Users cannot protect a custom MCP tool without editing source.
+- The list is hard-coded, not configurable. Users can't protect a custom MCP tool without editing source.
 
 #### 5.4.3 Dedupe correctness
 
@@ -648,18 +648,18 @@ task, skill, todowrite, todoread, batch, plan_enter, plan_exit, write, edit, pat
 
 **OpenCode behavior (`opencode/strategies.ts:45-67`):**
 
-- only `status === "completed"` parts participate (`:49`);
-- protected tools skipped (`:50`);
-- parts already equal to the marker skipped (`:51`);
-- groups by signature; all but the last part in the group get the marker (`:60-65`);
+- Only `status === "completed"` parts participate (`:49`);
+- Protected tools skipped (`:50`);
+- Parts already equal to the marker skipped (`:51`);
+- Groups by signature; all but the last part in the group get the marker (`:60-65`);
 - "last" is array order, assumed chronological.
 
 **Correctness risks:**
 
 1. **False positives from implicit context.** Two identical `bash` commands run in different working directories, environments, or after state changes have the same signature. The older output is discarded even though it may describe a different result.
 2. **No path/command normalization.** `./a.ts` vs `a.ts`, whitespace differences, or equivalent flags produce different signatures (false negatives) or the same signature (false positives).
-3. **Newest is not always best.** If the newest duplicate failed or returned an empty/partial result, the older successful output is still removed. OpenCode only groups completed results, so an errored newest is excluded and the older success survives—but a completed empty result will win.
-4. **No recency/age limit.** Dedupe applies across the entire message list, including very old calls; it does not consider whether the older output is still referenced.
+3. **Newest isn't always best.** If the newest duplicate failed or returned an empty/partial result, the older successful output is still removed. OpenCode only groups completed results, so an errored newest is excluded and the older success survives—but a completed empty result will win.
+4. **No recency/age limit.** Dedupe applies across the entire message list, including very old calls; it doesn't consider whether the older output is still referenced.
 5. **No output-size threshold.** Even tiny duplicate outputs are replaced; the marker overhead can exceed the saved content for very short outputs.
 6. **No cross-session awareness.** Fine (per-session), but no dedupe of repeated file reads across sessions.
 7. **Signature collisions from dropped nulls.** `{path:"a", recursive:null}` and `{path:"a"}` are treated as identical; usually harmless, but can merge calls that the tool distinguishes.
@@ -671,8 +671,8 @@ task, skill, todowrite, todoread, batch, plan_enter, plan_exit, write, edit, pat
 - Builds `newestBySignature` from non-protected tool results (`:142-148`).
 - Drops every non-newest duplicate entirely (`:153`).
 - Then drops errored results older than 4 turns (`:154`).
-- **Bug-like interaction:** if a tool was called twice, the older result succeeded, and the newest result is an old error, the older is dropped as a duplicate and the newest is dropped as an old error -> **no result survives**. The model loses both. This cannot happen in OpenCode because errors are excluded from dedupe groups.
-- Claude drops duplicates instead of marking them, so there is no trace that content was removed. Native compaction would at least summarize it.
+- **Bug-like interaction:** if a tool was called twice, the older result succeeded, and the newest result is an old error, the older is dropped as a duplicate and the newest is dropped as an old error -> **no result survives**. The model loses both. This can't happen in OpenCode because errors are excluded from dedupe groups.
+- Claude drops duplicates instead of marking them, so there's no trace that content was removed. Native compaction would at least summarize it.
 
 #### 5.4.4 Error purge inconsistency
 
@@ -683,10 +683,10 @@ task, skill, todowrite, todoread, batch, plan_enter, plan_exit, write, edit, pat
 
 #### 5.4.5 Compaction flag / TTL
 
-- The flag is keyed by session and expires after 10 s (`plugin.ts:128-129`). It is not correlated with a compaction id.
+- The flag is keyed by session and expires after 10 s (`plugin.ts:128-129`). It isn't correlated with a compaction id.
 - The transform reads `sessionID` from `messages[0]?.info?.sessionID` (`:330`); if the first message lacks it, the flag is never consumed.
-- If the flag is set but `messages.transform` is not called (compaction fails/canceled), it leaks until TTL; a normal turn within 10 s can consume it and be replaced with optimized context.
-- If two compactions interleave, the second `set` overwrites the first timestamp; one transform consumes the flag, the other does not.
+- If the flag is set but `messages.transform` isn't called (compaction fails/canceled), it leaks until TTL; a normal turn within 10 s can consume it and be replaced with optimized context.
+- If two compactions interleave, the second `set` overwrites the first timestamp; one transform consumes the flag, the other doesn't.
 - `compactingSessions` is per plugin instance; a plugin reload loses pending flags.
 
 V2's `ctx.session.hook("compaction")` + `event.result` should eliminate this entire class of bugs by binding the optimization to the compaction event.
@@ -696,8 +696,8 @@ V2's `ctx.session.hook("compaction")` + `event.result` should eliminate this ent
 #### 5.5.1 Compressing code and file content
 
 - OpenCode includes full tool inputs (`plugin.ts:86`), so `write`/`edit` payloads can contain entire files. It includes full completed outputs (`:87`), so `read`/`bash`/`grep` can contain code, diffs, logs, and paths.
-- Claude includes tool results truncated to 2,000 chars (`hook.ts:72,124`), which can cut mid-code and mid-line; there is no "truncated" marker.
-- LLMLingua-2 is a token-classification compressor. It drops low-information tokens; on code it can remove braces, punctuation, identifiers, imports, or path segments. The call passes only `rate` (`context_optimizer.py:161-164`); it does **not** pass `force_tokens`, `min_length`, `token_budget`, `condition_in_question`, or any code-aware option. There is no code-fence detection or syntax validation.
+- Claude includes tool results truncated to 2,000 chars (`hook.ts:72,124`), which can cut mid-code and mid-line; there's no "truncated" marker.
+- LLMLingua-2 is a token-classification compressor. It drops low-information tokens; on code it can remove braces, punctuation, identifiers, imports, or path segments. The call passes only `rate` (`context_optimizer.py:161-164`); it does **not** pass `force_tokens`, `min_length`, `token_budget`, `condition_in_question`, or any code-aware option. There's no code-fence detection or syntax validation.
 - The reranker/budget can drop a large code file entirely: the default query is generic, and the 8,000-char budget may not fit a file even if it is relevant. The oversized-first-doc exception only keeps one doc if its score is > 0 (`:145-150`).
 - `_normalize_doc` joins tuple/list docs with spaces (`:65-67`), which destroys newlines/indentation if a caller supplies structured docs. The adapters currently supply strings, but the API supports tuples (test at `tests/test_context_optimizer_core.py:166-175`).
 - Dedupe embeddings operate on whole docs; two similar code files may be treated as near-duplicates at cosine >= 0.9, or two versions of the same file may be collapsed, losing the diff history.
@@ -715,14 +715,14 @@ V2's `ctx.session.hook("compaction")` + `event.result` should eliminate this ent
 
 There is no `preserve_order` option, no re-sort by original index, and no metadata carrying turn numbers through the pipeline after serialization. The only ordering signal is the doc's position in `docs`, which is lost when sorted.
 
-**Recommendation:** keep an index/turn on every doc; after ranking/dedupe/budget, either restore original order or emit grouped chronological sections ("earliest -> latest") with relevance used only for selection, not presentation.
+**Recommendation:** keep an index/turn on every doc. After ranking/dedupe/budget, either restore original order or emit grouped chronological sections ("earliest -> latest") with relevance used only for selection, not presentation.
 
 #### 5.5.3 Generic query for automatic compaction
 
 - `buildPayload` uses `output.prompt || input.prompt || DEFAULT_QUERY` (`payload.ts:50`).
-- OpenCode `optimizeCompaction` passes only `{model}` and `{context}` (`plugin.ts:134`); there is no prompt, so the query is always `"Optimize the most relevant context for compaction."` (`payload.ts:3`).
+- OpenCode `optimizeCompaction` passes only `{model}` and `{context}` (`plugin.ts:134`); there's no prompt, so the query is always `"Optimize the most relevant context for compaction."` (`payload.ts:3`).
 - Claude `precompact` uses `input.custom_instructions || DEFAULT_QUERY` (`hook.ts:211`); custom instructions are usually absent, so also generic.
-- The OpenCode `/compact` command allows `query: args || payload.query` (`plugin.ts:227`), and the CLI accepts a caller query, but automatic paths do not use the last user request.
+- The OpenCode `/compact` command allows `query: args || payload.query` (`plugin.ts:227`), and the CLI accepts a caller query, but automatic paths don't use the last user request.
 
 The reranker therefore ranks "what looks generally important" rather than "what matters for the current task". A better query is the last user message, the compaction prompt, or a short task summary; even better, score against multiple queries and keep the union.
 
@@ -730,9 +730,9 @@ The reranker therefore ranks "what looks generally important" rather than "what 
 
 OpenCode replaces the summarizer's input with LLMLingua output, then the summarizer LLM writes a summary (`plugin.ts:164-171`; README `:102`). So the content is:
 
-1. pruned by rerank/dedupe/budget;
-2. token-drop compressed by LLMLingua at 0.6;
-3. paraphrased/summarized by the LLM.
+1. Pruned by rerank/dedupe/budget;
+2. Token-drop compressed by LLMLingua at 0.6;
+3. Paraphrased/summarized by the LLM.
 
 Three lossy stages. Claude manual mode skips the LLM summary (plugin output is the final context), which is arguably higher fidelity but still token-drop compressed. Claude auto mode has native summary + optimized context side by side, i.e., duplication rather than replacement.
 
@@ -747,23 +747,23 @@ As noted in §5.4.2, `PROTECTED_TOOLS` only affects TS dedupe/purge. A `write` w
 - CSV columns: `timestamp, cli, session_id, trigger, initial_chars, result_chars, saved_chars` (`:212`).
 - `initialChars = max(0, result.initialSize)`, `resultChars = max(0, result.finalSize)`, `savedChars = max(0, initial - result)` (`:236-238`).
 - `cli` is `"opencode"`, `"claude-code"`, or `"cli"`; `trigger` is free text (`"manual"`, `"auto"`, etc.).
-- Rows are appended only when the adapter has `ok && optimizedContext` (`plugin.ts:164-165`; `hook.ts:236,252`; `cli.ts:164`). Failures/no-ops are not counted.
+- Rows are appended only when the adapter has `ok && optimizedContext` (`plugin.ts:164-165`; `hook.ts:236,252`; `cli.ts:164`). Failures/no-ops aren't counted.
 - `formatStatsTable` aggregates by last/session/today/week/month/overall (`:282-321`).
 
 **Problems:**
 
 1. **Chars, not tokens.** A char count is a poor proxy across code/prose/Unicode; no tokenizer is used. `README.md:32` talks about tokens, but stats are chars.
 2. **`initial_size` is pre-purge.** Python computes it from all docs before `_purge_error_docs`/prune (`context_optimizer_cli.py:63,86`). So "saved" includes dropped error docs and pruned docs, not just LLMLingua.
-3. **Stages are conflated.** Rerank selection, dedupe, char budget, and LLMLingua are all folded into one `saved` number. You cannot tell whether LLMLingua contributed 5% or 50%.
+3. **Stages are conflated.** Rerank selection, dedupe, char budget, and LLMLingua are all folded into one `saved` number. You can't tell whether LLMLingua contributed 5% or 50%.
 4. **Negative savings are clamped to 0** (`config.ts:238`). If compression expands the text (short docs, overhead), the table reports 0% instead of a regression.
-5. **Per-turn TS savings are not recorded.** Dedupe/purge counts are logged (`plugin.ts:320-324`) but never added to stats. The biggest recurring savings may be invisible.
-6. **No per-hook/per-stage/latency/cache fields.** Cannot answer "how much did `execute.after` save?" or "what was the model load time?".
+5. **Per-turn TS savings aren't recorded.** Dedupe/purge counts are logged (`plugin.ts:320-324`) but never added to stats. The biggest recurring savings may be invisible.
+6. **No per-hook/per-stage/latency/cache fields.** Can't answer "how much did `execute.after` save?" or "what was the model load time?".
 7. **No cost model.** No input-token price, no API cost saved, no comparison to native compaction size.
-8. **CSV append is not atomic.** Concurrent compactions can interleave rows; the header race can duplicate headers (`:251-252`). `readResults` does a naive `split(",")` (`:260`); fields are sanitized (`:224-227`), so this is usually safe, but it is fragile.
-9. **Debug runs are excluded** from stats (`hook.ts:224-228`; README `:165`), which is correct for accounting but means debug/eval sessions do not contribute to the table.
+8. **CSV append isn't atomic.** Concurrent compactions can interleave rows; the header race can duplicate headers (`:251-252`). `readResults` does a naive `split(",")` (`:260`); fields are sanitized (`:224-227`), so this is usually safe, but it is fragile.
+9. **Debug runs are excluded** from stats (`hook.ts:224-228`; README `:165`), which is correct for accounting but means debug/eval sessions don't contribute to the table.
 10. **`recordOptimizationStats` is called even if the host later discards the result** (e.g., OpenCode compaction fails after the transform, Claude manual hand-off never consumed). The stat says "saved" even if the user never used it.
 
-**Recommendation:** record one row per hook invocation with `hook`, `stage`, `chars_in/out`, `tokens_in/out`, `latency_ms`, `model`, `cache_hit`, `error_code`, and `session_id`. Use a tokenizer. Do not clamp negative. Keep the existing CSV/table for backward compatibility, add a JSONL detail log.
+**Recommendation:** record one row per hook invocation with `hook`, `stage`, `chars_in/out`, `tokens_in/out`, `latency_ms`, `model`, `cache_hit`, `error_code`, and `session_id`. Use a tokenizer. Don't clamp negative. Keep the existing CSV/table for backward compatibility, add a JSONL detail log.
 
 ### 5.7 Fail-open, timeouts, concurrency
 
@@ -776,15 +776,15 @@ As noted in §5.4.2, `PROTECTED_TOOLS` only affects TS dedupe/purge. A `write` w
 **But fail-open can still hurt:**
 
 - **Long block:** a 300 s timeout blocks the compaction/turn. The user may think the agent is hung. Host-level timeouts may kill the hook before the bridge's own fail-open runs.
-- **Repeated cost:** a failure still pays spawn/import/model-load. There is no circuit breaker ("after 2 failures, skip for 10 minutes/session"). `warnOnce` suppresses duplicate logs per session+message (`bridge.ts:42-49`) but does not stop the work.
-- **SIGTERM only:** a CUDA hang may ignore SIGTERM; the child lingers. There is no SIGKILL follow-up or process-group kill.
-- **No cancellation:** user interrupt/ESC does not abort the bridge; the promise keeps running.
+- **Repeated cost:** a failure still pays spawn/import/model-load. There's no circuit breaker ("after 2 failures, skip for 10 minutes/session"). `warnOnce` suppresses duplicate logs per session+message (`bridge.ts:42-49`) but doesn't stop the work.
+- **SIGTERM only:** a CUDA hang may ignore SIGTERM; the child lingers. There's no SIGKILL follow-up or process-group kill.
+- **No cancellation:** user interrupt/ESC doesn't abort the bridge; the promise keeps running.
 - **Concurrency:** no global lock; N sessions -> N model loads. On GPU this is the most likely OOM path. On CPU it multiplies latency.
-- **stdout fragility:** a library warning on stdout turns success into `runtime_error`; stderr is only surfaced on parse failure. There is no structured log channel.
-- **Partial failure:** if the model loads but `optimize` throws (e.g., bad option key, OOM), the whole result is lost. There is no fallback to "pruned docs without LLMLingua" or "deduped docs only".
-- **No health/readiness:** a worker-less design cannot tell whether Python is installed/working until the first user compaction. The installer checks `python --version` and pip, but not that the models load successfully beyond the warm-up subprocess (`install.ts:45-86`).
+- **stdout fragility:** a library warning on stdout turns success into `runtime_error`; stderr is only surfaced on parse failure. There's no structured log channel.
+- **Partial failure:** if the model loads but `optimize` throws (e.g., bad option key, OOM), the whole result is lost. There's no fallback to "pruned docs without LLMLingua" or "deduped docs only".
+- **No health/readiness:** a worker-less design can't tell whether Python is installed/working until the first user compaction. The installer checks `python --version` and pip, but not that the models load successfully beyond the warm-up subprocess (`install.ts:45-86`).
 
-**Recommendation:** short per-turn timeout (e.g., 1–2 s) + longer compaction timeout; circuit breaker per session; SIGTERM -> SIGKILL after grace; AbortSignal; worker health check at plugin load; staged fallback; never block a normal turn on ML.
+**Recommendation:** short per-turn timeout (e.g., 1–2 s) + longer compaction timeout. Circuit breaker per session; SIGTERM -> SIGKILL after grace; AbortSignal; worker health check at plugin load; staged fallback; never block a normal turn on ML.
 
 ### 5.8 Tests: what is covered and what is not
 
@@ -806,10 +806,10 @@ As noted in §5.4.2, `PROTECTED_TOOLS` only affects TS dedupe/purge. A `write` w
 - **No performance/memory tests.** No cold/warm latency, model load time, RSS/VRAM, throughput, or concurrency benchmark.
 - **No timeout/cancellation tests.** `timeout` and `python_missing` are untested; the "missing bridge" test actually spawns Python against a nonexistent `.py`, which yields `runtime_error`, not `python_missing` (`core.test.mjs:138-145`).
 - **No protocol fuzz/edge cases.** Empty stdout, stdout noise, non-zero exit with valid JSON, huge payload, invalid UTF-8, `docs` with Unicode/newlines, `options` with unknown keys, `min_input_size` non-int.
-- **No `model_limits`/`auto_compression_chars` integration test.** Only `optimizerOptionsFromConfig` forwarding is tested (`core.test.mjs:58-99`); `buildPayload`'s gating is not.
+- **No `model_limits`/`auto_compression_chars` integration test.** Only `optimizerOptionsFromConfig` forwarding is tested (`core.test.mjs:58-99`); `buildPayload`'s gating isn't.
 - **No env precedence tests.** Env vs stored vs default is untested.
 - **No OpenCode TTL/concurrency tests.** 10 s expiry, interleaved compactions, normal-turn mis-fire, empty sessionID.
-- **No persistence tests.** Whether in-place mutations survive host serialization is not verified; tests only inspect the in-memory objects.
+- **No persistence tests.** Whether in-place mutations survive host serialization isn't verified; tests only inspect the in-memory objects.
 - **No Claude edge cases.** `MAX_TRANSCRIPT_ENTRIES=200` cap, newest-error-both-dropped interaction, `/clear` hand-off leak within 1 h, concurrent debug pair mispairing.
 - **No e2e host tests.** No real OpenCode/Claude Code process, no actual hook dispatch, no browser/TUI.
 - **No install/detect tests.** `install.ts`/`detect.ts` are untested.
@@ -820,8 +820,8 @@ As noted in §5.4.2, `PROTECTED_TOOLS` only affects TS dedupe/purge. A `write` w
 
 - **Sensitive content in debug files.** `~/.context-optimizer/debug/<session>/<stamp>/plugin.txt` and `native.txt` contain full optimized/native context (code, paths, possibly secrets). They are plaintext, with default filesystem permissions, and never cleaned up (`debug.ts:91-156`). `claude-sessions/*.md` and `*.outcome.txt` are also plaintext and may persist if not consumed (`hook.ts:162-178`).
 - **Logs.** `writeLog` records doc counts/sizes and outcome messages, not full content (`plugin.ts:149-151,162`; `log.ts:15-23`), but error messages may include stderr/tracebacks with paths.
-- **Model downloads.** `pip install sentence-transformers llmlingua` is unpinned (`install.ts:57-63`); a future LLMLingua/SentenceTransformers release can change behavior or break the API. The installer does not create a venv; it installs into whatever `python3` resolves to.
-- **Disk usage.** README says ~3–5 GB for models (`README.md:63`); no cleanup/uninstall command. `context-optimizer install` only adds; there is no `uninstall`.
+- **Model downloads.** `pip install sentence-transformers llmlingua` is unpinned (`install.ts:57-63`); a future LLMLingua/SentenceTransformers release can change behavior or break the API. The installer doesn't create a venv; it installs into whatever `python3` resolves to.
+- **Disk usage.** README says ~3–5 GB for models (`README.md:63`); no cleanup/uninstall command. `context-optimizer install` only adds; there's no `uninstall`.
 - **Network:** first run downloads models from Hugging Face; no offline/air-gapped mode or `HF_HUB_OFFLINE` handling.
 - **Windows:** `py -3` default, UTF-8 stdin workaround (`context_optimizer_cli.py:35-40`), `where` for detection (`detect.ts:8-10`); untested.
 - **Concurrent installs/config writes:** no locking; `settings.json`/`config.json` direct writes (`install.ts:120-145`; `config.ts:82-86`).
@@ -833,7 +833,7 @@ As noted in §5.4.2, `PROTECTED_TOOLS` only affects TS dedupe/purge. A `write` w
 
 ## 6. Reusable code/design pieces
 
-Legend: **Reuse** = directly usable or lightly adapted; **Refactor** = keep the idea, change the interface/behavior; **Replace** = do not carry into V2 as-is.
+Legend: **Reuse** = directly usable or lightly adapted; **Refactor** = keep the idea, change the interface/behavior; **Replace** = don't carry into V2 as-is.
 
 | Piece | Location | Verdict | Notes for V2 |
 |---|---|---|---|
@@ -886,7 +886,7 @@ The target V2 surface named by the caller:
 
 - `chat.messages.transform` -> `ctx.session.hook("context")`
 - `session.compacting` -> `ctx.session.hook("compaction")` with `event.result`
-- tool outputs -> `ctx.tool.hook("execute.after")`
+- Tool outputs -> `ctx.tool.hook("execute.after")`
 
 The mapping below assumes those hooks can read the current messages/parts and write a result. Where the exact V2 semantics differ (especially `event.result`), the design should be adjusted rather than copied blindly.
 
@@ -934,14 +934,14 @@ onContext(event):
 **Rules:**
 
 1. **Never mutate persisted parts.** `planDedupeAndPurge` should take immutable snapshots and return a list of `{partId, replacement}`. Apply at the host boundary via `event.result` or a returned messages array. Keep raw text in a sidecar (`cache/raw/<hash>`) for audit/undo.
-2. **Cheap path is always on.** Dedupe/purge should not depend on Python. If the worker is down/slow, return the TS-only plan.
+2. **Cheap path is always on.** Dedupe/purge shouldn't depend on Python. If the worker is down/slow, return the TS-only plan.
 3. **Per-turn ML is opt-in and bounded.** Compress only:
-   - tool outputs above `tool_min_chars` (e.g., 4k);
-   - older than `min_turns` (e.g., 2) or outside a "hot" recent window;
-   - not protected, not pinned, not an error;
-   - kind in `{logs, prose, json}`; skip `code`/`diff` by default.
+   - Tool outputs above `tool_min_chars` (e.g., 4k);
+   - Older than `min_turns` (e.g., 2) or outside a "hot" recent window;
+   - Not protected, not pinned, not an error;
+   - Kind in `{logs, prose, json}`; skip `code`/`diff` by default.
 4. **Budget, not whole-conversation.** Per-turn LLMLingua should compress the selected spans, not re-compress the entire session. This avoids the compaction budget trap and keeps latency predictable.
-5. **Timeout:** e.g., 1–2 s per turn. On timeout, use the TS-only plan; do not block the model response.
+5. **Timeout:** e.g., 1–2 s per turn. On timeout, use the TS-only plan; don't block the model response.
 6. **No reordering.** Only replace spans in place; preserve message/part order. The context hook should never sort messages.
 7. **Idempotence:** markers must be versioned and include a hash/link to raw content. Skip parts already marked by the current version; re-mark if the marker version changes.
 8. **Stats:** record per-turn dedupe/purge counts and ML compress chars/tokens/latency/cache hit.
@@ -978,18 +978,18 @@ onCompaction(event):
 
 **Semantics to verify in V2:**
 
-- If `event.result` is the **final compacted context**, `replace` skips the host's LLM summary. That is the Claude-manual behavior and the highest quality risk. Default should be `input` or `augment`, not `replace`.
+- If `event.result` is the **final compacted context**, `replace` skips the host's LLM summary. That's the Claude-manual behavior and the highest quality risk. Default should be `input` or `augment`, not `replace`.
 - If `event.result` is the **summarizer input**, `input` is the right mode; the host still summarizes, matching current OpenCode.
 - If the host exposes a native summary and an injection channel, `augment` avoids throwing away the native summary (current Claude auto behavior).
 - If `event.result` can only be set after the native summary, append `## Optimized Context` rather than replacing.
 
 **Rules:**
 
-1. **Use the real task query.** Prefer `event.prompt`, then the last user message, then a task summary. Do not use the constant `DEFAULT_QUERY` for automatic compaction.
+1. **Use the real task query.** Prefer `event.prompt`, then the last user message, then a task summary. Don't use the constant `DEFAULT_QUERY` for automatic compaction.
 2. **Preserve chronology.** Rank for selection, then restore original order (or emit chronological sections). This alone should improve quality substantially.
 3. **Token budget, not 8k chars.** Use a model-aware token budget; keep `max_chunks` as a secondary cap.
-4. **Protect code/diffs/protected tools.** Select them, but do not LLMLingua them by default. If they must be compressed, use `force_tokens` and validate key symbols.
-5. **Do not double-compress.** Mark the result as already compressed; on the next compaction, skip/limit re-compression of the synthetic summary. Cache by content hash.
+4. **Protect code/diffs/protected tools.** Select them, but don't LLMLingua them by default. If they must be compressed, use `force_tokens` and validate key symbols.
+5. **Don't double-compress.** Mark the result as already compressed; on the next compaction, skip/limit re-compression of the synthetic summary. Cache by content hash.
 6. **Fail open.** On any error/timeout, return without setting `event.result`; the host compacts natively.
 7. **Record stats with trigger and stages.** Include `manual`/`auto`, doc count, tokens in/out, prune/compress split, latency, cache hits.
 8. **No TTL flag, no splice.** The event object is the correlation boundary.
@@ -1039,9 +1039,9 @@ onToolExecuteAfter(event):
 5. **Per-output budget.** Cap both input and output chars; keep first/last lines for logs; keep stack traces/error lines.
 6. **Raw sidecar.** Store the original output under `cache/raw/<hash>`; the marker includes the hash. This makes compression auditable and reversible by the host/tooling.
 7. **Cache key includes model/rate/version.** Invalidate on model/rate change. TTL/size limit (LRU) to bound disk.
-8. **Dedupe at source.** Maintain a session map `signature -> latest callId/output hash`; when a duplicate completes, replace the older output with a marker (or leave it for the context hook). Do this carefully: side-effecting tools should not have their outputs treated as interchangeable if the environment changed.
+8. **Dedupe at source.** Maintain a session map `signature -> latest callId/output hash`; when a duplicate completes, replace the older output with a marker (or leave it for the context hook). Do this carefully: side-effecting tools shouldn't have their outputs treated as interchangeable if the environment changed.
 9. **Stats per call.** Record tool name, kind, chars/tokens in/out, latency, cache hit, skipped reason.
-10. **Do not block the tool result.** If the worker is slow, return the raw output and compress asynchronously for the next turn (or skip). The tool call should not wait seconds for compression.
+10. **Don't block the tool result.** If the worker is slow, return the raw output and compress asynchronously for the next turn (or skip). The tool call shouldn't wait seconds for compression.
 
 **Why this helps:** repeated file reads, test logs, grep results, and command outputs are the bulk of long sessions. Compressing them at production time avoids re-reading/re-compressing the whole transcript at compaction, and the cache makes repeated identical outputs free. It also lets the context hook stay cheap.
 
@@ -1053,7 +1053,7 @@ onToolExecuteAfter(event):
 
 #### 7.5.1 Process model
 
-- **Start:** at plugin init, spawn `python3 -u context_optimizer_worker.py` with `stdio: ["pipe","pipe","pipe"]`. Do not block plugin startup; start warm-up in the background.
+- **Start:** at plugin init, spawn `python3 -u context_optimizer_worker.py` with `stdio: ["pipe","pipe","pipe"]`. Don't block plugin startup; start warm-up in the background.
 - **Handshake:** worker prints one JSON line `{"ready":true,"protocol":1,"device":"cuda","models":{...}}` after loading (or `{"ready":false,"error":...}`). Parent gates ML calls on `ready`.
 - **Requests:** newline-delimited JSON, one object per line:
   ```json
@@ -1097,7 +1097,7 @@ onToolExecuteAfter(event):
 #### 7.5.4 Keep the one-shot path
 
 - `context-optimizer optimize` and `install` warm-up can keep using the one-shot `context_optimizer_cli.py` protocol.
-- The one-shot path is also the fallback if the worker cannot start (e.g., old Python, no `-u` support, sandbox restrictions).
+- The one-shot path is also the fallback if the worker can't start (e.g., old Python, no `-u` support, sandbox restrictions).
 - Share the payload/result schema between one-shot and worker to avoid drift; the worker can be a thin loop around the same `ContextOptimizer` methods.
 
 ### 7.6 Config V2 additions
@@ -1155,7 +1155,7 @@ Record one event per hook/stage, not one aggregate row per compaction:
 ```
 
 - Use a tokenizer for `tokens_*`; fall back to chars if unavailable.
-- Do not clamp negative savings; report expansion.
+- Don't clamp negative savings. Report expansion.
 - Keep the existing CSV/table as a compatibility view; add JSONL detail and a `stats --json`/`stats --by-hook` CLI.
 - Track cache hit rate, worker restarts, queue depth, model load time, and failure rate.
 - Log skipped reasons (below threshold, protected, code kind, worker unavailable) so users can see why compression didn't run.
@@ -1201,7 +1201,7 @@ Record one event per hook/stage, not one aggregate row per compaction:
 
 **E2E:**
 
-- OpenCode: real plugin load, real `messages.transform`/`compaction` dispatch, real session DB; assert history is not corrupted.
+- OpenCode: real plugin load, real `messages.transform`/`compaction` dispatch, real session DB; assert history isn't corrupted.
 - Claude: real hooks with a temp transcript; assert manual block/`/clear` hand-off, auto injection, debug bundle.
 - Install/uninstall on macOS/Linux/Windows.
 
@@ -1246,15 +1246,15 @@ Record one event per hook/stage, not one aggregate row per compaction:
 
 This is the single most important product signal in the repo. It means:
 
-- The pipeline's size win is real, but the quality win is not established.
+- The pipeline's size win is real, but the quality win isn't established.
 - The author's own A/B testing found missing context, not just different wording.
 - The default configuration (8k chars, 12 chunks, rate 0.6, generic query, relevance ordering) is the likely cause; see §4.7–4.8.
-- Any V2 that makes LLMLingua run **more often** must not assume "more compression = better". It should default to preserving native compaction and add compression only where it is demonstrably safe (tool logs, repeated outputs, old noise), with an opt-in `replace` mode.
+- Any V2 that makes LLMLingua run **more often** mustn't assume "more compression = better". It should default to preserving native compaction and add compression only where it is demonstrably safe (tool logs, repeated outputs, old noise), with an opt-in `replace` mode.
 
 Other relevant README caveats:
 
 - **Small sessions:** "When the conversation being compacted is small, the bookkeeping around compaction costs more than the compaction saves. Only manually run a `/compact` after you have send multiple messages and want a fresh context." (`README.md:34`)
-- **Lossy, not paraphrasing:** "Quality-wise it's lossy compression, not paraphrasing — LLMLingua drops low-information tokens... if a compaction ever trims something you needed, raise `compression_rate` or `max_chunks`." (`README.md:142`)
+- **Lossy, not paraphrasing:** "Quality-wise it's lossy compression, not paraphrasing — LLMLingua drops low-information tokens... If a compaction ever trims something you needed, raise `compression_rate` or `max_chunks`." (`README.md:142`)
 - **Native vs plugin:** native `/compact` is a single LLM summary; the plugin replaces it for manual compaction with local rerank/dedupe/LLMLingua and no LLM call (`README.md:140-142`). The plugin is cheaper but not necessarily better.
 - **Long sessions:** the plugin is aimed at long-running sessions; short sessions see little benefit (`README.md:30`).
 
@@ -1295,7 +1295,7 @@ Folder layout (`README.md:180-187`; `debug.ts:23-28,91-114`):
 
 It is run in a **new session** so the judge's context contains only the two files (`evaluate.md:6`). The command reads both files in full and writes `evaluation.md` to the same folder (`:8-38`).
 
-**Reuse:** this is a good judge prompt for V2. Automate pair selection (`debug latest` JSON), feed both files, and aggregate verdicts. Add deterministic checks (key identifiers/paths/errors preserved; code fences balanced; chronology order) because an LLM judge can be inconsistent.
+**Reuse:** this is a good judge prompt for V2. Automate pair selection (`debug latest` JSON), feed both files, and aggregate verdicts. Add deterministic checks (key identifiers/paths/errors preserved. Code fences balanced; chronology order) because an LLM judge can be inconsistent.
 
 **Limitation:** there is no scoring script, no statistical aggregation, no inter-run comparison, and no OpenCode equivalent. Debug mode is Claude-only because it relies on `PreCompact`/`PostCompact` (`debug.ts:1-14`; `hook.ts:300-311`). V2 should add an OpenCode debug bundle/native comparison.
 
@@ -1316,7 +1316,7 @@ The existence of debug mode and the evaluate rubric is evidence that the author 
 - Baseline: native compaction only.
 - Candidate: plugin compaction (input/augment/replace) and/or per-turn/tool compression.
 - Judge: rubric + deterministic key-fact checks.
-- Gate: do not enable a mode by default unless it beats/matches native on task continuity and key facts without unacceptable noise/size.
+- Gate: don't enable a mode by default unless it beats/matches native on task continuity and key facts without unacceptable noise/size.
 
 ---
 

@@ -28,5 +28,5 @@ JS/ONNX probe (TinyBERT, 57 MB) was run ad hoc; numbers are recorded in FINDINGS
 ```bash
 mkdir -p /tmp/llm-js && cd /tmp/llm-js && npm init -y
 npm install @huggingface/transformers@4.2.0 @atjsh/llmlingua-2@3.0.0 js-tiktoken
-node /workspace/opencode-context-optimisations/research/bench_llmlingua_js.mjs
+node research/bench_llmlingua_js.mjs
 ```
