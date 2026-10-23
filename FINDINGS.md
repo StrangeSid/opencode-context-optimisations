@@ -439,98 +439,245 @@ In a code-heavy session, the compressible share may be only **10–25%** of toke
 
 ---
 
-## 6. Evaluation plan
+## 6. Compression taxonomy audit & reality check
 
-Before default-on, build an offline replay harness:
+A survey of the compression techniques across academic literature, open-source repositories, and gateway engines shows three distinct operational layers. **Only Layer 1 (pre-request text compression) reduces billed input tokens on hosted API models.**
 
-1. **Corpus:** 20–50 real sessions (or synthetic equivalents) with tool-heavy coding, research, and long-running refactor tasks.
-2. **A/B:** same model, same prompts, compression off vs on. Compare task success, number of turns, tool calls, and final diff correctness.
-3. **Retention probes:** after compression, ask the model to recall exact paths, error codes, numbers, decisions, and user constraints. Score exact match.
-4. **Structural validity:** for code samples, run `tsc`/`eslint`/parser on compressed text; require 100% valid or fall back.
-5. **Log usability:** grep for error lines, timestamps, test counts; require key lines survive.
-6. **Latency:** p50/p95 added per model call; enforce a budget (e.g. p95 < 300 ms for free pruning, < 1.2 s when paid compression runs).
-7. **Cost:** tokens saved per lane × price; compare with the extra latency and any quality loss.
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Layer 1: Pre-Request Text Compression (Client / Gateway)               │
+│ • Deterministic: RTK, Lite, Session-Dedup, Headroom (SmartCrusher)    │
+│ • Reversible: CCR (Compress-Cache-Retrieve)                            │
+│ • Statistical/SLM: LLMLingua-1/2, Selective Context, Claw-Compactor   │
+│ • Rule-based: Caveman (input rewrite)                                  │
+│ → REDUCES BILLED INPUT TOKENS ON HOSTED APIS (OpenAI, Anthropic, etc.) │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │ (HTTP / JSON)
+┌────────────────────────────────────▼───────────────────────────────────┐
+│ Layer 2: Model Architecture / Soft Representations (White-Box Only)    │
+│ • ICAE, AutoCompressor, Gist Tokens                                    │
+│ → Requires model weights, custom attention masks, LoRA adapters.       │
+│ → CANNOT BE USED WITH HOSTED BLACK-BOX APIS.                           │
+└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│ Layer 3: Inference Engine KV-Cache Eviction (Server-Side Decode)       │
+│ • StreamingLLM, H2O, SnapKV, PyramidKV                                 │
+│ → Runs in vLLM / llama.cpp / SGLang during attention computation.     │
+│ → DOES NOT REDUCE BILLED INPUT TOKENS ON HOSTED APIS.                  │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-Ship default-on only if quality retention is within an agreed tolerance (e.g. ≥95% on retention probes) and p95 latency is acceptable.
+### 6.1 Comprehensive method matrix
 
----
-
-## 7. Implementation plan
-
-| Phase | Scope | Exit criterion |
-|---|---|---|
-| **0. Spike (this repo)** | Findings, hook map, benchmarks, reference audit | This document |
-| **1. Core** | Content classifier, token estimator, cache, policy engine, fake compressor + unit tests | Policy tests pass; no OpenCode dependency (`src/classify.ts` + `tests/classify.test.ts` started) |
-| **2. Plugin** | V2 `context` hook, config, stats, `context_expand`, fail-open worker | Runs against a local OpenCode v2.1.3 session; no crashes; logs savings |
-| **3. Compaction** | `compaction` hook `precompress` mode, chronology-safe, code-safe | Summarizer input smaller, summary quality unchanged on eval set |
-| **4. Quality** | Replay harness, retention probes, rate tuning, line-level LLMLingua experiment | Defaults justified by data |
-| **5. Packaging** | Python daemon installer **or** JS/ONNX backend, model download UX, docs | One-command install; works offline after first run |
-
-### Immediate next experiments
-
-1. **Line-level LLMLingua for logs.** Score each line (or batch of lines) with the classifier, keep whole lines by salience, preserve newlines. This should fix the "one-line log" failure and make LLMLingua usable on the largest tool-output class.
-2. **Span-preserving prose compression.** Use `return_word_label=True` / offset mapping to reconstruct kept spans with original whitespace instead of joining words. Verify readability and negation retention.
-3. **BERT-base ONNX (JS) benchmark.** Determine whether the pure-JS path matches Python quality at acceptable latency; if yes, drop Python entirely.
-4. **`tool.execute.after` persistence test.** Does replacing `event.result` persist to history? If yes, one-time compression becomes viable; if no, keep it transient.
-5. **Auto-compaction ordering test on 2.1.3.** Confirm the runtime inference and whether `compaction` hook fires for native compaction.
-
----
-
-## 8. Risks and open questions
-
-1. **V2 API stability.** Hooks are new; `@opencode/plugin` is versioned with OpenCode. Pin the version and test on upgrade. `context`/`compaction` are documented, not experimental, but semantics can change.
-2. **Transient vs durable.** If `tool.execute.after` replacements persist, a bug could permanently corrupt history. Keep it off by default until verified; snapshot originals.
-3. **Compaction interaction.** `context` compression does not stop auto-compaction; users may expect it to. Document this explicitly.
-4. **Prompt caching.** Any change to the compressed prefix invalidates provider caches. Keep the prefix byte-stable and cache compression output.
-5. **Token estimation.** OpenCode's internal estimator is not exposed; `session.step.ended` usage is the best signal but arrives after the call. Use a conservative buffer.
-6. **Model quality.** LLMLingua-2 is trained on MeetingBank, not code. No agentic-coding evidence. The local code test is negative. The evaluation harness is mandatory.
-7. **Python packaging.** 1.4 GB venv, 5–6 min install, model download, MPS quirks. A JS/ONNX backend is the better long-term distribution story.
-8. **Privacy.** All compression is local; no context leaves the machine. Still, the expand store may contain secrets; encrypt or redact, and document retention.
-9. **Concurrency.** Multiple sessions can hit the worker at once; serialize or pool, and enforce per-call timeouts.
-10. **Native provider compaction.** Likely bypasses the hook; do not assume it can be customized.
-
----
-
-## 9. Recommendation
-
-**Build it, but scope it as selective compression.**
-
-- Start with the **request lane** and a **warm daemon + content-hash cache**. It is the only way to use LLMLingua "more often" without wrecking quality or latency.
-- Compress **old prose and tool narration only**. Protect code, JSON, logs, errors, instructions, and the recent window.
-- Add the **expand tool** from day one; lossy compression without retrieval is not defensible.
-- Keep **native compaction** and use the **compaction lane** to make the summarizer's input cheaper. Do not disable `compaction.auto` until the evaluation proves compression alone is safe.
-- Treat **"compress everything" as out of scope**. The measured quality damage is too large, and the reference's own warning confirms it.
-- If the goal is maximum LLMLingua usage rather than maximum safety, the honest next step is **line-level/span-preserving LLMLingua**, not a lower rate on the existing token-level path.
-
-**Success metric:** tokens saved per session with no measurable loss on retention probes, at p95 < 1.2 s added latency when compression runs.
+| Method / Name | Primary Source / Year | Layer | Mechanism | Works with Black-Box APIs? | Claimed vs Real Savings | Open-Source Status / License | OpenCode Assessment |
+|---|---|---|---|:---:|---|---|---|
+| **LLMLingua-2** | [arXiv:2403.12968](https://arxiv.org/abs/2403.12968) (ACL 2024) | Layer 1 | Task-agnostic token classification with multilingual BERT / XLM-R | **Yes** (text-to-text) | Claim: 2–5×; Real: 40–50% on prose, **destructive on code/logs** | [microsoft/LLMLingua](https://github.com/microsoft/LLMLingua) (MIT) | **Viable for old prose only.** Use warm worker + strict classifier. |
+| **LongLLMLingua** | [arXiv:2310.06839](https://arxiv.org/abs/2310.06839) (ACL 2024) | Layer 1 | Question-aware budget allocation + document reordering using LLaMA-2-7B | **Yes** (text-to-text) | Claim: up to 4× with +21% recall; Real: slow local inference (7B model) | [microsoft/LLMLingua](https://github.com/microsoft/LLMLingua) (MIT) | Too heavy for interactive coding turns. |
+| **Selective Context** | [arXiv:2310.06201](https://arxiv.org/abs/2310.06201) (EMNLP 2023) | Layer 1 | Lexical unit self-information scoring with small causal LM (GPT-2) | **Yes** (text-to-text) | Claim: 50% context reduction; Real: ~35% on natural language | [liyucheng09/Selective_Context](https://github.com/liyucheng09/Selective_Context) (Dormant, no root LICENSE) | Predecessor to LLMLingua-2; unidirectional LM is slower and less accurate. |
+| **ICPC** | [arXiv:2501.01625](https://arxiv.org/abs/2501.01625) (2025) | Layer 1 | MLM probability scoring via BERT/RoBERTa; drops low-information words | **Yes** (text-to-text) | Claim: 10–16 ms on 8×A100; **Unvetted preprint, 0 citations** | **No code released.** Heavy acronym collision with programming contest. | Ignore until peer-reviewed code is available. |
+| **RTK** (Rust Token Killer) | [rtk-ai/rtk](https://github.com/rtk-ai/rtk) (2026) | Layer 1 | Command-aware deterministic filtering of bash/CLI outputs (git, tests, build) | **Yes** (text-to-text) | Claim: 60–90% on CLI outputs; Real: **60–80% verified on dev tools** | Active Rust repo (~84k★, Apache-2.0 / BUSL-1.1); ships OpenCode hook | **Highest value for coding agents.** Zero semantic drift on code. |
+| **Caveman** | [JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman) (2026) | Layer 1 & Output | Rule-based prose condensation; prompt steering for terse responses | **Yes** (prompt + output) | Claim: 65% token cut; Real: 33% input prose, 40–60% output tokens | Active Go/CLI repo (~114k★, Apache-2.0); OpenCode skill available | Safe for output steering; risky for raw code/prompts without boundaries. |
+| **Headroom** (incl. SmartCrusher, CCR) | [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) (2026) | Layer 1 | Tabular JSON crusher (SmartCrusher), AST code compressor, Reversible cache (CCR) | **Yes** (proxy / MCP) | Claim: 60–95% on JSON, 20% on coding traces; Real: 70%+ on JSON arrays | Active Python/TypeScript (~77k★, Apache-2.0); PyPI / npm | **Excellent for JSON/MCP tool outputs.** CCR provides reversible safety. |
+| **Claw-Compactor** | [open-compress/claw-compactor](https://github.com/open-compress/claw-compactor) (2026) | Layer 1 | 14-stage local pipeline: AST code thinning, JSON sampling, log/diff folding | **Yes** (text-to-text) | Claim: 15–82%; Independent audit (Hysen Labs): **11.8–19.1% on SWE-bench** | Python repo (~2k★, MIT, dormant since 2026-04); PyPI 7.1.0 | Real but modest gains; complex pipeline risks prompt-cache invalidation. |
+| **OmniRoute Lite** | OmniRoute built-in (`lite.ts`) | Layer 1 | Whitespace collapsing, image-URL placeholders, older tool-result truncation | **Yes** (gateway) | Claim: ~15% whitespace; Real: **37% locally, driven by 2000-char tool cutoff** | Shipped in local OmniRoute 3.8.51 (`open-sse/services/compression/lite.ts`) | **Hazard:** truncates historical file reads. Must configure safely. |
+| **Session-Dedup** | OmniRoute built-in / arXiv:2606.06337 | Layer 1 | Content-addressed cross-turn line-block deduplication (`[dedup:ref sha=...]`) | **Yes** (gateway) | Real: **9.3% tokens saved locally (48M tokens)**; 100% lossless | Shipped in local OmniRoute 3.8.51; inspired by TokenMizer blueprint | **Safe default.** Keeps first occurrence intact, eliminates duplicate logs/files. |
+| **ICAE** | [arXiv:2307.06945](https://arxiv.org/abs/2307.06945) (ICLR 2024) | Layer 2 | LoRA autoencoder producing continuous memory vectors (4× compression) | **No** (needs weights) | Claim: 4× compression, >2× speedup; Real: requires white-box LLaMA/Mistral | [getao/icae](https://github.com/getao/icae) (CC0-1.0, dormant) | Inapplicable to OpenAI/Anthropic/Gemini APIs. |
+| **AutoCompressor** | [arXiv:2305.14788](https://arxiv.org/abs/2305.14788) (EMNLP 2023) | Layer 2 | Fine-tunes model to emit 50 summary vectors per segment as soft prompts | **No** (needs weights) | Claim: handles 30k context with fixed summary vectors | [princeton-nlp/AutoCompressors](https://github.com/princeton-nlp/AutoCompressors) (No license file, dormant) | Inapplicable to black-box APIs. |
+| **Gist Tokens** | [arXiv:2304.08467](https://arxiv.org/abs/2304.08467) (NeurIPS 2023) | Layer 2 | Modified attention mask compressing prompt into learned gist token activations | **No** (needs weights) | Claim: up to 26× compression; 4.2% wall-clock speedup | [jayelm/gisting](https://github.com/jayelm/gisting) (Apache-2.0, dormant) | Inapplicable to black-box APIs. |
+| **StreamingLLM** | [arXiv:2309.17453](https://arxiv.org/abs/2309.17453) (ICLR 2024) | Layer 3 | Attention sinks (first 4 tokens) + rolling KV window; constant decode RAM | **No** (inference engine) | Cuts KV memory to fixed size; **zero reduction in billed API input tokens** | HF Transformers `SinkCache`, llama.cpp `--keep`; not mainline vLLM | Server-side only. Does not help API users. |
+| **H2O** (Heavy Hitter Oracle) | [arXiv:2306.14048](https://arxiv.org/abs/2306.14048) (NeurIPS 2023) | Layer 3 | Dynamic KV eviction keeping top ~20% cumulative attention tokens | **No** (inference engine) | Up to 29× decode throughput in offloading benchmarks; **0 billed savings** | [FMInference/H2O](https://github.com/FMInference/H2O); not mainline vLLM | Server-side only. |
+| **SnapKV** | [arXiv:2404.14469](https://arxiv.org/abs/2404.14469) (2024) | Layer 3 | One-shot post-prefill observation window; keeps top-k KV heads + window | **No** (inference engine) | 3.6× generation speed, 8.2× KV memory at 16k; **0 billed savings** | [FasterDecoding/SnapKV](https://github.com/FasterDecoding/SnapKV); not mainline vLLM | Server-side only. |
+| **PyramidKV** | [arXiv:2406.02069](https://arxiv.org/abs/2406.02069) (2024) | Layer 3 | Pyramidal layer-wise KV budget allocation (more in lower layers, less higher) | **No** (inference engine) | 12% KV matches full context on LongBench; **0 billed savings** | [Zefan-Cai/KVCache-Factory](https://github.com/Zefan-Cai/KVCache-Factory); not mainline vLLM | Server-side only. |
 
 ---
 
-## 10. Sources and local research
+## 7. Local gateway audit: OmniRoute 3.8.51
 
-### Local
+OpenCode on this machine is configured to route model requests directly through a local OmniRoute proxy (`http://localhost:20128/v1`), authenticated via loopback API keys.
 
-- [`research/opencode-v2-hooks.md`](./research/opencode-v2-hooks.md) — exact V2 hook types, runtime ordering, token visibility, open questions.
-- [`research/reference-repo.md`](./research/reference-repo.md) — line-by-line audit of `evermeer/context-optimizer`.
-- [`research/llmlingua.md`](./research/llmlingua.md) — install, API, model sizes, quality, alternatives.
-- [`research/bench.md`](./research/bench.md) — M3 Pro latency/quality benchmark, raw data in `bench.json`.
-- [`research/bench_llmlingua.py`](./research/bench_llmlingua.py) — reproducible benchmark.
+OmniRoute already contains a full compression subsystem with 12 pluggable engines:
 
-### Upstream
+```
+OmniRoute Compression Pipeline (open-sse/services/compression/)
+├── session-dedup (pri 3, lossless cross-turn block deduplication)
+├── ccr           (pri 4, Compress-Cache-Retrieve via MCP)
+├── lite          (pri 5, whitespace folding + tool-result truncation)
+├── rtk           (pri 10, command-aware shell output filtering)
+├── headroom      (pri 15, SmartCrusher tabular JSON compaction)
+├── caveman       (pri 20, rule-based prose condensation)
+├── aggressive    (pri 30, summarization and aging of older turns)
+├── llmlingua     (pri 35, ONNX MobileBERT / TinyBERT token pruning)
+├── ultra         (pri 40, heuristic token pruning + code thinning)
+├── relevance     (pri 50, query-salience sentence scoring)
+├── codex-responses (pri 60, tool output wrapper for responses API)
+└── omniglyph     (pri 90, experimental dense encoding)
+```
 
-- OpenCode V2 plugins: <https://opencode.ai/v2/docs/build/plugins>
-- OpenCode V2 compaction: <https://opencode.ai/v2/docs/compaction>
-- OpenCode V2 migration (V1 hooks do not run in V2): <https://opencode.ai/v2/docs/build/plugins/migrate-v1>
-- LLMLingua: <https://github.com/microsoft/LLMLingua>
-- LLMLingua-2 paper: <https://arxiv.org/abs/2403.12968>
-- BERT model card: <https://huggingface.co/microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank>
-- XLM-R model card: <https://huggingface.co/microsoft/llmlingua-2-xlm-roberta-large-meetingbank>
-- JS port: <https://www.npmjs.com/package/@atjsh/llmlingua-2>
-- Prior art: <https://github.com/AidenGeunGeun/opencode-context-compress> (token-threshold auto-compression, V2; model-directed, not LLMLingua)
-- Prior art: <https://github.com/Plutarch01/opencode-lcm> (durable long-memory store; V1 hooks)
+### 7.1 The lossy request policy gate
 
-### Verified versions
+OmniRoute enforces a strict safety boundary in `lossyRequestPolicy.ts`:
+- Requests without explicit compression headers are restricted to the **Safe Default Pipeline**: `session-dedup` + `lite` + `ccr` + `headroom`.
+- Lossy engines (**LLMLingua, RTK, Caveman, Relevance, Aggressive, Ultra**) are automatically stripped from the stacked pipeline unless the caller sends an explicit header:
+  - `x-omniroute-compression: allow-lossy`
+  - `x-omniroute-compression: engine:<id>`
+  - `x-omniroute-compression: <combo_id>`
+- **Direct consequence:** OpenCode requests were not running LLMLingua or RTK at the gateway, despite both engines being marked `enabled: true` in OmniRoute's SQLite database.
 
-- OpenCode `v2.1.3`, `@opencode/plugin@2.1.3`, Node `26.10.0`
-- `llmlingua` 0.2.2, `torch` 2.14.1, `transformers` 5.20.2, Python 3.12.9
-- `@atjsh/llmlingua-2` 3.0.0, `@huggingface/transformers` 4.2.0
+### 7.2 Hidden hazard: Lite tool-result truncation
+
+In `lite.ts` (`compressToolResults`):
+```typescript
+const MAX_TOOL_LENGTH = resolveLiteMaxToolLength(options.maxToolLength); // defaults to 2000 chars
+// Any tool result before the current turn exceeding 2000 chars is sliced:
+msg.content = msg.content.slice(0, cutIndex) + "\n...[truncated]";
+```
+- **Local telemetry evidence:** Across 7,964 requests in the user's database, `lite` recorded **420,402,707 tokens saved** (37% average reduction).
+- **The catch:** This reduction is not lossless whitespace removal. It silently truncates past file reads (`read` tool) and directory scans to 2,000 characters. If an agent refers back to code read 3 turns ago, it finds `...[truncated]` and is forced to re-read the file.
+- **Remediation:** Configure `lite.compressToolResults = false` or raise `maxToolLength` to 50,000+ characters in OmniRoute settings.
+
+### 7.3 Live API receipts: `agy/gemini-3.8-flash-high`
+
+Live end-to-end completions executed against `http://localhost:20128/v1/chat/completions` using the active model `agy/gemini-3.8-flash-high`:
+
+#### Receipt 1: Cold start LLMLingua
+```http
+POST /v1/chat/completions HTTP/1.1
+Host: localhost:20128
+x-omniroute-compression: engine:llmlingua
+
+{
+  "model": "agy/gemini-3.8-flash-high",
+  "messages": [{ "role": "user", "content": "<3,661 tokens of natural language prose>" }]
+}
+```
+**Response:**
+- `HTTP/1.1 200 OK`
+- `x-omniroute-compression: stacked; source=request-header; tokens=3661->1881; rules: llmlingua-compressed-1-messagesx1`
+- `duration_ms: 50310` (cold start: spawned ONNX worker thread and loaded TinyBERT weights).
+- **Tokens:** 3,661 → 1,881 (**48.6% compression**, 1,780 tokens saved).
+
+#### Receipt 2: Warm LLMLingua
+```http
+POST /v1/chat/completions HTTP/1.1
+x-omniroute-compression: engine:llmlingua
+```
+- `HTTP/1.1 200 OK`
+- `x-omniroute-latency-ms: 3660` (3.66s total round-trip latency including Gemini API call).
+- `tokens=3661->1880` (reproducible ~48.6% reduction).
+
+#### Receipt 3: RTK deterministic filter
+```http
+POST /v1/chat/completions HTTP/1.1
+x-omniroute-compression: engine:rtk
+```
+- `HTTP/1.1 200 OK`
+- `x-omniroute-compression: rtk; source=request-header`
+- `duration: 4.21s` total API round-trip.
+
+---
+
+## 8. Layered context optimization architecture
+
+To achieve maximum token savings without risking syntax errors, hallucinated line numbers, or cache thrashing, context optimization must be layered across the OpenCode agent and the OmniRoute gateway:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. Prefix Cache Stability (QuantumLock / Static Instructions)          │
+│    Keep system prompt, tools schemas, and repo instructions byte-fixed.│
+│    Enables 50–90% provider prompt-caching discounts.                   │
+├────────────────────────────────────────────────────────────────────────┤
+│ 2. Lossless Cross-Turn Dedup (Session-Dedup)                           │
+│    Hashes suffix line blocks. Replaces duplicate reads with [dedup:ref]│
+│    Local saving: 9.3% tokens (48M tokens saved), 0% information loss.  │
+├────────────────────────────────────────────────────────────────────────┤
+│ 3. Deterministic Tool Output Filtering (RTK)                           │
+│    Prunes build output, test passes, git statuses. Preserves errors.   │
+│    Savings: 60–80% on shell/bash results; zero code syntax risk.       │
+├────────────────────────────────────────────────────────────────────────┤
+│ 4. Tabular Structure Compaction (Headroom / SmartCrusher)              │
+│    Compresses uniform JSON arrays (>= 8 rows) from MCP/API tools.      │
+│    Savings: 60–90% on structured data; preserves outliers and errors.  │
+├────────────────────────────────────────────────────────────────────────┤
+│ 5. Reversible Context Offloading (CCR)                                 │
+│    Replaces large historical text blocks with [CCR retrieve hash=...]. │
+│    Requires OpenCode to register `omniroute_ccr_retrieve` tool.        │
+├────────────────────────────────────────────────────────────────────────┤
+│ 6. Selective SLM Token Pruning (LLMLingua Request Lane)                │
+│    Target: Old assistant/tool natural language (>2 turns old).         │
+│    Gated by `src/policy.ts`: NEVER touches code, diffs, JSON, logs.    │
+│    Savings: 40–50% on prose portions under context budget pressure.    │
+├────────────────────────────────────────────────────────────────────────┤
+│ 7. Response Output Steering (Caveman Output Mode)                      │
+│    Injects system boundaries for terse prose while keeping code exact. │
+│    Savings: 30–60% of output generation tokens.                        │
+├────────────────────────────────────────────────────────────────────────┤
+│ 8. Adaptive Escalation Floor (Context Budget)                          │
+│    Only escalates to lossy compression when context approaches limit.  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 9. Implementation deliverables in this repo
+
+The codebase in `/workspace/opencode-context-optimisations` implements the core safety and policy modules for Layer 6:
+
+1. **`src/classify.ts`** — Conservative content classifier:
+   - Detects code, unified diffs, JSON objects/arrays, structured logs, and empty content.
+   - Computes path density and fence presence to protect technical text.
+   - Evaluates whether text is safe for token-dropping compression (`isTokenCompressible`).
+2. **`src/policy.ts`** — Safe selection policy engine:
+   - Protects system messages, recent user turns (default 2), code, logs, and JSON.
+   - Operates oldest-first under a configurable token budget.
+   - Generates deterministic SHA-256 cache keys sensitive to text, model, and compression rate.
+   - Rejects small chunks (<400 tokens) to avoid overhead.
+3. **`tests/classify.test.ts` & `tests/policy.test.ts`** — Test suite:
+   - 20 unit tests covering edge cases (multilingual tokens, multipart messages, turn boundaries, oversized candidates, CJK text).
+   - 100% passing (`npm test`), zero TypeScript compiler errors (`npm run typecheck`).
+
+---
+
+## 10. Practical integration & action guide
+
+### Option A: Enable RTK + Safe Stack in OmniRoute (Recommended First Step)
+To immediately activate verified tool-result compression without code modifications:
+1. Open OmniRoute dashboard (`http://localhost:20128`) or CLI:
+   ```bash
+   omniroute context-eng rtk config set --intensity standard --applyToToolResults true
+   ```
+2. In OpenCode configuration (`~/.config/opencode/opencode.json`), provide the opt-in header for the `omniroute` provider:
+   ```jsonc
+   {
+     "provider": {
+       "omniroute": {
+         "npm": "@ai-sdk/openai-compatible",
+         "options": {
+           "baseURL": "http://localhost:20128/v1",
+           "headers": {
+             "x-omniroute-compression": "allow-lossy"
+           }
+         }
+       }
+     }
+   }
+   ```
+   *Note: Ensure `lite.compressToolResults` is disabled if using RTK so historical file reads are not truncated.*
+
+### Option B: Deploy Local OpenCode LLMLingua Plugin
+To perform surgical, policy-gated LLMLingua compression inside OpenCode:
+1. Use `src/policy.ts` inside OpenCode's `ctx.session.hook("context")`.
+2. Inspect `event.messages`:
+   - Evaluate candidates using `selectLlmlinguaCandidates(messages)`.
+   - Pass only verified old prose candidates to the local ONNX TinyBERT worker.
+   - Cache results in memory by `candidate.cacheKey`.
+   - Leave all other messages and code blocks byte-identical.
+3. Register a `context_expand` tool so the model can retrieve original uncompressed text if needed.
+
+---
+
+## 11. Conclusion
+
+- **Do not blindly compress coding contexts with LLMLingua.** Token-dropping models destroy code syntax, flatten log lines, and drop negative assertions.
+- **The biggest wins for coding agents are deterministic:** RTK bash filtering (60–80% on CLI outputs), Session-Dedup (9.3% lossless), and Headroom JSON compaction.
+- **LLMLingua belongs in a surgical, selective lane** targeting older natural-language explanations and search results, operating under strict policy gates with cache prefix protection.
+

@@ -10,4 +10,15 @@ export {
   type ContentKind,
 } from "./classify.ts"
 
+export {
+  selectLlmlinguaCandidates,
+  type Candidate,
+  type PolicyMessage,
+  type RejectReason,
+  type RejectedPart,
+  type SelectionOptions,
+  type SelectionResult,
+  type TextPart,
+} from "./policy.ts"
+
 export const PLUGIN_ID = "opencode-llmlingua"
