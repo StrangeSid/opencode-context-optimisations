@@ -21,6 +21,12 @@ import {
 export interface TextPart {
   type: string
   text?: string
+  /**
+   * Set by a caller that has already decided this span must never be token
+   * compressed (for example an error tool result). The policy rejects it
+   * without consulting the classifier.
+   */
+  protected?: boolean
   [key: string]: unknown
 }
 
@@ -104,13 +110,19 @@ function cacheKey(text: string, modelId: string, rate: number): string {
     .digest("hex")
 }
 
-function textParts(message: PolicyMessage): Array<{ partIndex: number | null; text: string }> {
+interface PolicyTextPart {
+  partIndex: number | null
+  text: string
+  protected: boolean
+}
+
+function textParts(message: PolicyMessage): PolicyTextPart[] {
   if (typeof message.content === "string") {
-    return [{ partIndex: null, text: message.content }]
+    return [{ partIndex: null, text: message.content, protected: false }]
   }
   if (!Array.isArray(message.content)) return []
 
-  const parts: Array<{ partIndex: number | null; text: string }> = []
+  const parts: PolicyTextPart[] = []
   message.content.forEach((part, partIndex) => {
     if (
       part &&
@@ -118,7 +130,11 @@ function textParts(message: PolicyMessage): Array<{ partIndex: number | null; te
       part.type === "text" &&
       typeof part.text === "string"
     ) {
-      parts.push({ partIndex, text: part.text })
+      parts.push({
+        partIndex,
+        text: part.text,
+        protected: part.protected === true,
+      })
     }
   })
   return parts
@@ -135,26 +151,48 @@ function userTurnBoundary(messages: PolicyMessage[], protectedTurns: number): nu
   return userIndexes[Math.max(0, userIndexes.length - keep)]
 }
 
+function resolveInteger(value: number | undefined, fallback: number, min: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  return Math.max(min, Math.floor(value))
+}
+
+function resolveRate(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 1) {
+    return DEFAULT_RATE
+  }
+  return value
+}
+
+function resolveModelId(value: string | undefined): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : DEFAULT_MODEL_ID
+}
+
 /**
  * Select the parts that may be passed to LLMLingua.
  *
  * Candidates are returned oldest-first so a caller with a token budget spends it
  * on the least recent context. Rejections are returned for observability.
+ *
+ * Non-finite numeric options fall back to their defaults instead of disabling a
+ * safety gate. This matters for NaN, where comparisons are always false.
  */
 export function selectLlmlinguaCandidates(
   messages: PolicyMessage[],
   options: SelectionOptions = {},
 ): SelectionResult {
-  const protectedTurns = Math.max(
+  // protectedTurns is allowed to be 1 as an explicit advanced override; the
+  // documented default remains 2. A non-finite value falls back to the default.
+  const protectedTurns = resolveInteger(
+    options.protectedTurns,
+    DEFAULT_PROTECTED_TURNS,
     1,
-    Math.floor(options.protectedTurns ?? DEFAULT_PROTECTED_TURNS),
   )
-  const minTokens = Math.max(0, options.minTokens ?? DEFAULT_MIN_TOKENS)
-  const budgetTokens = Math.max(0, options.budgetTokens ?? DEFAULT_BUDGET_TOKENS)
+  const minTokens = resolveInteger(options.minTokens, DEFAULT_MIN_TOKENS, 0)
+  const budgetTokens = resolveInteger(options.budgetTokens, DEFAULT_BUDGET_TOKENS, 0)
   const allowUserProse = options.allowUserProse === true
   const includeToolProse = options.includeToolProse !== false
-  const modelId = options.modelId ?? DEFAULT_MODEL_ID
-  const rate = options.rate ?? DEFAULT_RATE
+  const modelId = resolveModelId(options.modelId)
+  const rate = resolveRate(options.rate)
   const protectedFromIndex = userTurnBoundary(messages, protectedTurns)
 
   const rejected: RejectedPart[] = []
@@ -211,6 +249,16 @@ export function selectLlmlinguaCandidates(
     }
 
     for (const part of parts) {
+      if (part.protected) {
+        rejected.push({
+          messageIndex,
+          partIndex: part.partIndex,
+          reason: "content",
+          detail: "protected",
+        })
+        continue
+      }
+
       const classification = classifyText(part.text)
       if (!isTokenCompressible(classification)) {
         rejected.push({

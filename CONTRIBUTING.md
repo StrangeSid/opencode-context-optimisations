@@ -16,9 +16,9 @@ Thank you for your interest in contributing. This project provides selective, ca
 
 ### Prerequisites
 
-- Node.js >= 22.0.0
+- Node.js >= 22.0.0 with built-in TypeScript type stripping (the test script runs `tests/*.test.ts` directly; use a recent 22.x or newer release)
 - Npm >= 10.0.0
-- (Optional) Python 3.12+ with virtual environment for running local benchmark harnesses
+- (Optional) Python 3.12+ with a virtual environment for the LLMLingua worker or benchmark harnesses
 
 ### Setup Instructions
 
@@ -33,7 +33,15 @@ npm install
 # 3. Verify tests and TypeScript compilation
 npm test
 npm run typecheck
+
+# 4. Optional: run the OpenCode Go quality harness
+cp .env.example .env       # add OC_GO_KEY; .env is gitignored
+.venv-worker/bin/python python/llmlingua_worker.py --port 8765 &
+npm run eval:quality -- --runs 1
 ```
+
+Never commit `.env` or an API key. The repository ignores `.env` and `.env.*`
+except `.env.example`.
 
 ---
 
@@ -41,9 +49,19 @@ npm run typecheck
 
 - `src/classify.ts`: Fast heuristic classifier identifying content kind and token compressibility.
 - `src/policy.ts`: Pure selection policy determining eligible messages and enforcing token budgets.
-- `src/index.ts`: Public API exports.
+- `src/v2.ts`: Structural adapter for OpenCode V2 messages, content parts, and tool-result values.
+- `src/optimizer.ts`: LRU, in-flight dedupe, timeout, literal validation, annotation, expansion guard, and in-place replacement.
+- `src/watermark.ts`: Request-size estimation and context-pressure gate.
+- `src/literals.ts`: Path/URL/number/line/error preservation post-check.
+- `src/expand.ts`: Bounded original-text store and retrieval markers.
+- `src/tool-result.ts`: Tool-result text extraction and protected-tool matching.
+- `src/compressor.ts`: HTTP client for the optional warm sidecar.
+- `src/plugin.ts`: OpenCode V2 context, compaction, tool-output, and `context_expand` wiring.
+- `src/index.ts`: Pure public API exports. The host plugin is exported from `./plugin`.
 - `tests/`: Node test runner test suites (`tests/*.test.ts`).
-- `docs/`: Architectural specifications and decision records.
+- `python/`: Optional LLMLingua HTTP worker and its sidecar-only requirements.
+- `research/eval_quality.mjs`: OpenCode Go A/B fact-retention harness.
+- `docs/`: Architectural specifications, API reference, and decision records.
 - `research/`: Experimental benchmark scripts, raw data, and upstream hook audits.
 
 ---
@@ -55,7 +73,7 @@ npm run typecheck
    - `fix/bug-fix`
    - `docs/documentation-update`
    - `perf/optimization-name`
-2. **Test Coverage:** Every bug fix or new classification rule must include test coverage in `tests/classify.test.ts` or `tests/policy.test.ts`.
+2. **Test Coverage:** Every bug fix or new rule must include coverage in the relevant suite: classifier (`tests/classify.test.ts`), policy (`tests/policy.test.ts`), V2 adapter (`tests/v2.test.ts`), optimizer/cache/literals/fail-open (`tests/optimizer.test.ts`), sidecar protocol (`tests/compressor.test.ts`), expand store (`tests/expand.test.ts`), literals (`tests/literals.test.ts`), tool results (`tests/tool-result.test.ts`), watermark (`tests/watermark.test.ts`), or plugin lanes (`tests/plugin.test.ts`).
 3. **Type Checking:** All code must compile cleanly under strict mode without emitting compiler errors:
    ```bash
    npm run typecheck

@@ -1,6 +1,6 @@
 # FINDINGS — making OpenCode use LLMLingua more often
 
-**Status:** research spike, 2026-10-22
+**Status:** research spike, 2026-10-22; Phase 1.5/1.6 implementation update, 2026-10-25
 **Target:** OpenCode v2.1.3 (`@opencode/plugin@2.1.3`), Apple M3 Pro / 18 GB / macOS
 **Reference studied:** [`evermeer/context-optimizer`](https://github.com/evermeer/context-optimizer) v0.5.0, commit `d3fbe31`
 **Local evidence:** [`research/`](./research) — hook types, reference audit, LLMLingua notes, benchmarks
@@ -211,13 +211,14 @@ Published evidence (LLMLingua-2 paper): good on MeetingBank-style summarization/
                       keep code/paths/errors, then let the summarizer run
 ```
 
-| Lane | Trigger | Content | Persistence | Default |
+| Lane | Trigger | Content | Persistence | Implementation |
 |---|---|---|---|---|
-| **Request** | context > soft watermark (e.g. 55%) | old prose / tool narration | transient | on (conservative) |
-| **Compaction** | native/manual compaction | transcript, code-safe | compaction result | on |
-| **Tool output** | single result > size threshold | prose tool output; logs via structure | unverified | off initially |
+| **Request** | estimated usage >= watermark (default 0.70) | old prose / tool narration | transient | **Implemented** (heuristic watermark) |
+| **Compaction** | native/manual compaction | transcript, code-safe | summarizer input | **Implemented** (precompress, no `event.result`) |
+| **Tool output** | completed tool result above threshold | prose tool output | unverified | **Implemented**, default-off |
+| **Expand** | model calls `context_expand` | stored originals | in-memory | **Implemented** |
 
-The request lane is the direct answer to "use LLMLingua more often": it runs automatically on every model call, but only does work when the context is under pressure and only on safe content. The compaction lane is automatic too; commands exist only for inspection and overrides.
+The request lane is the direct answer to "use LLMLingua more often": it runs on model calls only when estimated context pressure crosses the threshold. The compaction lane precompresses the summarizer transcript. The tool-output lane is implemented but default-off because replacement persistence is unverified.
 
 ### 4.3 Content policy
 
@@ -275,6 +276,8 @@ Notes:
 - **Chunk cap:** 1–2k tokens per request; 8k takes 1.6 s on CPU and isn't acceptable on the critical path. Batch multiple small chunks into one worker call.
 - **Rate:** 0.8 for user prose, 0.6 for assistant/tool narration. Lower rates save more but lose negations and numbers.
 - **Token accounting:** subscribe to `session.step.ended` and use `tokens.input` (+ cache read/write as appropriate) as the measured baseline; add a character/token estimate for content appended since that step. Fall back to `chars/4` if no event has arrived. Flag the estimate in stats; don't pretend it is exact.
+
+> **Implementation note (2026-10-25):** the current plugin implements content selection, the token budget, cache, worker call, a heuristic watermark gate based on `ctx.model.list()`, literal validation, and reversible markers. The research design's free-pruning stage and provider-usage token accounting are still not implemented; the watermark uses a local estimate.
 
 ### 4.5 Cache
 
@@ -620,7 +623,7 @@ To achieve maximum token savings without risking syntax errors, hallucinated lin
 
 ## 9. Implementation deliverables in this repo
 
-The codebase in this repository implements the core safety and policy modules for Layer 6:
+**Phase 1 (2026-10-22): core safety and policy modules.**
 
 1. **`src/classify.ts`** — Conservative content classifier:
    - Detects code, unified diffs, JSON objects/arrays, structured logs, and empty content.
@@ -631,9 +634,33 @@ The codebase in this repository implements the core safety and policy modules fo
    - Operates oldest-first under a configurable token budget.
    - Generates deterministic SHA-256 cache keys sensitive to text, model, and compression rate.
    - Rejects small chunks (<400 tokens) to avoid overhead.
-3. **`tests/classify.test.ts` & `tests/policy.test.ts`** — Test suite:
-   - 20 unit tests covering edge cases (multilingual tokens, multipart messages, turn boundaries, oversized candidates, CJK text).
+   - Supports caller-marked `protected` parts and fails closed on non-finite options.
+
+**Phase 1.5 (2026-10-25): V2 integration path.**
+
+3. **`src/v2.ts`** — V2 transcript adapter:
+   - Converts `Message.content` text parts and tool-result `text`/`content` payloads into policy text spans.
+   - Marks tool-result `json` and `error` values protected.
+   - Preserves message IDs, tool IDs/names, and source pointers for exact write-back.
+4. **`src/optimizer.ts`** — Lane orchestration:
+   - Reuses the policy, adds an LRU, in-flight dedupe, per-candidate timeout, literal validation, optional annotation, and an expansion guard.
+   - Applies replacements in place and returns stage-level stats.
+   - Fails open on backend errors, empty output, timeouts, and dropped literals.
+5. **`src/watermark.ts`** — Estimates request pressure from system/tools/messages and gates the request lane against `ctx.model.list()` limits.
+6. **`src/literals.ts`** — Post-checks paths, URLs, numbers, line references, and error codes.
+7. **`src/expand.ts`** — Bounded original-text store plus deterministic `[ctx_expand:...]` markers.
+8. **`src/tool-result.ts`** — Extracts a single tool-result text slot and protects write/edit/plan/etc. tools.
+9. **`src/compressor.ts`** — HTTP sidecar client with the tiny JSON contract.
+10. **`src/plugin.ts`** — OpenCode V2 plugin with watermark-gated `context`, precompress-only `compaction`, optional `execute.after` compression, and a `context_expand` tool.
+11. **`python/llmlingua_worker.py`** — Optional warm LLMLingua-2 HTTP sidecar.
+12. **`research/eval_quality.mjs`** — OpenCode Go A/B fact-retention harness.
+13. **Tests** — `classify`, `policy`, `v2`, `optimizer`, `compressor`, `expand`, `literals`, `tool-result`, `watermark`, and `plugin` suites:
+   - 74 unit tests covering multilingual tokens, turn boundaries, V2 content parts, tool-result JSON/error protection, code protection, cache eviction, timeouts, literal rejection, expand markers, watermark decisions, compaction, tool lane, and hook registration.
    - 100% passing (`npm test`), zero TypeScript compiler errors (`npm run typecheck`).
+
+**Quality smoke test (2026-10-25):** `deepseek-v4.1-flash` via OpenCode Go retained 6/6 fact checks on both original and compressed transcripts over two runs, with an estimated 32.5% token reduction and about $0.0013 of API usage. This is a fixture-level check, not a SWE-bench-style evaluation.
+
+**Not yet implemented:** free-pruning/dedupe, provider-usage-based token accounting, verification of `tool.execute.after` persistence across V2 history, and a broad task-success benchmark.
 
 ---
 
@@ -664,14 +691,17 @@ To immediately activate verified tool-result compression without code modificati
    *Note: Ensure `lite.compressToolResults` is disabled if using RTK so historical file reads aren't truncated.*
 
 ### Option B: Deploy Local OpenCode LLMLingua Plugin
-To perform surgical, policy-gated LLMLingua compression inside OpenCode:
-1. Use `src/policy.ts` inside OpenCode's `ctx.session.hook("context")`.
-2. Inspect `event.messages`:
-   - Evaluate candidates using `selectLlmlinguaCandidates(messages)`.
-   - Pass only verified old prose candidates to the local ONNX TinyBERT worker.
-   - Cache results in memory by `candidate.cacheKey`.
-   - Leave all other messages and code blocks byte-identical.
-3. Register a `context_expand` tool so the model can retrieve original uncompressed text if needed.
+All four lanes are now implemented:
+1. Start the warm worker from `python/llmlingua_worker.py` (CPU or MPS).
+2. Configure `src/plugin.ts` with `endpoint`, the request budget/rate, `watermarkRatio`, and compaction/tool flags. Without `endpoint` the plugin is inert.
+3. **Context:** the watermark estimates system/tools/messages against `ctx.model.list()`; above the threshold, `src/v2.ts` adapts the transcript, `selectLlmlinguaCandidates` selects old prose, and misses go to the worker under a 1,200 ms deadline.
+4. **Compaction:** the plugin pre-compresses the transcript handed to the summarizer and leaves `event.result` unset, so the native summary still runs.
+5. **Tool output:** optional and default-off; completed tool text is extracted and run through the same policy path.
+6. **Expand:** compressed spans carry `[ctx_expand:...]` markers and the `context_expand` tool returns the stored original.
+
+Only approved text/tool-result spans are replaced; `system`, `tools`, code, JSON, errors, tool-call IDs, and recent turns stay byte-identical. Backend failures fail open, and a post-check rejects output that drops paths, URLs, numbers, line references, or error codes.
+
+`research/eval_quality.mjs` provides the quality A/B gate through OpenCode Go. Still future work: free-pruning/dedupe, provider-usage token accounting, verified tool-output persistence, and a SWE-bench-style task-success benchmark.
 
 ---
 
@@ -680,4 +710,5 @@ To perform surgical, policy-gated LLMLingua compression inside OpenCode:
 - **Don't blindly compress coding contexts with LLMLingua.** Token-dropping models destroy code syntax, flatten log lines, and drop negative assertions.
 - **The biggest wins for coding agents are deterministic:** RTK bash filtering (60–80% on CLI outputs), Session-Dedup (9.3% lossless), and Headroom JSON compaction.
 - **LLMLingua belongs in a surgical, selective lane** targeting older natural-language explanations and search results, operating under strict policy gates with cache prefix protection.
+- **The request lane is now implemented and reversible**: watermark-gated context compression, precompress-only compaction, optional tool-output compression, literal preservation, expand markers, and a fact-retention harness. The remaining work is evidence, not plumbing: free-pruning, provider-usage accounting, tool-hook persistence verification, and a broader task-success benchmark.
 

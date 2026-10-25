@@ -2,6 +2,9 @@
 
 This document describes the architectural design, lifecycle, and component interactions of `opencode-context-optimisations`.
 
+> [!NOTE]
+> **Status (2026-10-25):** implemented components are the classifier, selection policy, V2 transcript adapter, watermark gate, optimizer (LRU + timeout + literal validation + expansion guard), HTTP compressor client, context/compaction/tool hooks, reversible `context_expand` store/tool, optional warm Python worker, and the OpenCode Go quality harness. Caveats: the watermark uses a heuristic estimate rather than provider usage; the tool-output lane is default-off because replacement persistence is unverified; compaction is precompress-only; literal validation is a post-check rather than force-token protection.
+
 ---
 
 ## 1. System Context (C4 Level 1)
@@ -14,13 +17,14 @@ flowchart TD
     
     subgraph Client System
         OpenCode -->|Execute Hooks| Plugin[Context Optimisations Plugin]
-        Plugin -->|1. Classify & Select| Policy[Policy & Classifier Engine]
-        Plugin -->|2. Local Pruning| Worker[TinyBERT ONNX / SLM Worker]
+        Plugin -->|1. Adapt V2 messages| Adapter[V2 Transcript Adapter]
+        Adapter -->|2. Classify & Select| Policy[Policy & Classifier Engine]
+        Plugin -->|3. Compress cache misses| Worker[Warm HTTP LLMLingua-2 Sidecar (optional)]
     end
     
     subgraph Network Gateway
         Plugin -->|Optimized Messages| OmniRoute[OmniRoute Local Proxy :20128]
-        OmniRoute -->|3. Shell / Dedup Filters| RTK[RTK & Session-Dedup]
+        OmniRoute -->|Post-plugin filters| RTK[RTK & Session-Dedup]
     end
     
     subgraph Hosted Frontier Providers
@@ -33,7 +37,7 @@ flowchart TD
 
 ## 2. Container & Component Architecture (C4 Level 2 & 3)
 
-The internal system is composed of four decoupled subsystems:
+The internal system is composed of decoupled subsystems: the classifier, selection policy, V2 transcript adapter, watermark estimator, optimizer, literal validator, expand store, HTTP compressor client, tool-result extractor, and OpenCode plugin. The diagrams below show the classification/selection logic and the implemented request path.
 
 ```mermaid
 graph TD
@@ -68,6 +72,36 @@ graph TD
         Z --> Candidates[Eligible Candidates]
     end
 ```
+
+### 2.1 Implemented request path
+
+```mermaid
+flowchart LR
+    Hook["ctx.session.hook('context')"] --> Watermark["src/watermark.ts<br/>estimate usage / model limit"]
+    Watermark -->|below threshold| Skip[Skip]
+    Watermark -->|crosses threshold| Adapter["src/v2.ts<br/>adapt ContentPart / ToolResultValue"]
+    Adapter --> Policy["src/policy.ts<br/>protect + classify + budget"]
+    Policy --> Optimizer["src/optimizer.ts<br/>cache + timeout + literals + expansion guard"]
+    Optimizer --> Cache[("LRU<br/>SHA-256 keys")]
+    Optimizer --> Backend["src/compressor.ts<br/>HTTP sidecar client"]
+    Backend --> Worker["python/llmlingua_worker.py<br/>warm LLMLingua-2"]
+    Optimizer --> Expand["src/expand.ts<br/>store original + marker"]
+    Optimizer --> Apply["applyV2Replacements<br/>mutate outgoing text only"]
+```
+
+The plugin registers:
+- `context` with the watermark gate above.
+- `compaction`, which reuses the same adapter/policy/optimizer path on the
+  transcript handed to the summarizer, but never sets `event.result`.
+- `tool.execute.after` only when `toolOutputEnabled` is true; it extracts one
+  textual slot, runs the same policy/optimizer path through a synthetic tool
+  message, and replaces only that slot.
+- `context_expand` via `ctx.tool.transform` when `expandToolEnabled` is true.
+
+It never edits the persisted transcript, `event.system`, `event.tools`,
+tool-call IDs, reasoning parts, media, or compaction checkpoints. Each hook
+invocation reconstructs the adapter view and reapplies replacements because V2
+context edits are transient.
 
 ---
 
@@ -107,20 +141,24 @@ Context optimization operates across three distinct architectural layers. Only *
 When the OpenCode agent executes an action step:
 
 1. **Transcript Construction:** OpenCode reconstructs `messages[]` from session history.
-2. **`context` Hook Invocations:**
-   - The plugin intercepts `event.messages`.
-   - `selectLlmlinguaCandidates(event.messages)` scans messages oldest-first.
-   - The last *N* user turns (default 2), system prompts, code blocks, diffs, JSON, and logs are marked untouchable.
-   - Eligible stale prose parts are hashed via SHA-256 (`policy_version + model_id + rate + text`).
-3. **Cache Lookup:**
-   - Hits return previously compressed text in `< 1 ms`.
-   - Misses dispatch to a warm worker thread (TinyBERT ONNX / LLMLingua-2), compressing text at rate `0.6`.
-4. **Transient Mutation:** `event.messages` is modified in-place for the outgoing HTTP payload only. The session's on-disk transcript remains byte-verbatim.
-5. **Gateway Processing (OmniRoute):**
-   - `session-dedup` replaces duplicate cross-turn line blocks with `[dedup:ref sha=...]`.
-   - `headroom` compacts large uniform JSON arrays (>= 8 rows).
-   - If opted-in via `x-omniroute-compression: allow-lossy`, `rtk` prunes verbose bash tool results while retaining error lines and summaries.
-6. **Model Completion:** Provider receives an optimized payload with intact syntax, accurate line numbers, and stabilized prefix caching.
+2. **Watermark:** The plugin estimates system + tools + messages + tool-call inputs and compares that against `ctx.model.list()`'s input/context limit minus a response reserve. Below `watermarkRatio` (default 0.70) the request lane returns without touching the transcript.
+3. **V2 Adaptation:** `toPolicyTranscript()` maps:
+   - `text` parts directly,
+   - `tool-result` `text` and `content` text entries as eligible spans,
+   - `tool-result` `json` and `error` values as protected spans,
+   - tool calls, reasoning, media, and compaction parts as untouched.
+4. **Policy Selection:** `selectLlmlinguaCandidates()` protects the recent user-turn window, system/role exclusions, code/diffs/JSON/logs, small chunks, and the token budget. Candidates are ordered oldest-first and hashed with `policy_version + model_id + rate + text`.
+5. **Literal Gate:** `findMissingLiterals()` rejects output that loses a path, URL, number, line reference, or error code from the original. The raw compressed result is not cached when this check fails.
+6. **Cache and Sidecar:**
+   - LRU hits apply immediately.
+   - Misses go to the optional HTTP sidecar with a per-candidate deadline (default 1,200 ms).
+   - Empty output, timeouts, HTTP errors, and expansions at or above `maxCompressedRatio` leave the original text untouched.
+7. **Expandability:** When enabled, `createExpandAnnotator()` stores the original in a bounded in-memory store and appends `[ctx_expand:ctx_...]` to the compressed text.
+8. **Transient Mutation:** `applyV2Replacements()` writes only to the approved text/tool-result spans. IDs, tool-call pairing, and all non-text parts are preserved. The persisted transcript remains byte-verbatim.
+9. **Compaction Lane:** If OpenCode compacts, the plugin pre-compresses the transcript through the same path using `compactionBudgetTokens` / `compactionTimeoutMs`, then leaves `event.result` unset so OpenCode's summarizer still runs over the compressed history.
+10. **Tool-Output Lane (optional, default off):** After a completed tool, the plugin extracts one textual slot, runs the same policy/optimizer path through a synthetic tool message, and replaces only that slot. Errors and protected tools are skipped.
+11. **Gateway Processing (optional, external):** If OpenCode is routed through OmniRoute, its own `session-dedup`, `headroom`, and opt-in `rtk` stages may run after the plugin. Those engines are not part of this repository.
+12. **Model Completion:** The provider receives a payload whose system prompt, tool schemas, recent window, and technical content are unchanged.
 
 ---
 
@@ -128,20 +166,29 @@ When the OpenCode agent executes an action step:
 
 To prevent subtle hallucinations and syntax corruption in coding agents:
 
-| Invariant | Enforcement Mechanism | Failure Mode Prevented |
+| Invariant | Enforcement Mechanism | Status |
 |---|---|---|
-| **Code Syntax Integrity** | Regex keyword density + fence isolation | `tsc` compilation errors (`TS1005`), lost brackets/semicolons |
-| **Error Trace Preservation** | Explicit log regex detecting stack traces | Lost error locations, missing stack frames |
-| **Numeric & Line-Number Fidelity** | Numeric preservation check | Hallucinated line offsets in patches and diffs |
-| **Prefix-Cache Alignment** | Zero modification to system prompt and tool definitions | Provider prompt cache invalidation (50–90% cost penalty) |
-| **Instruction Recency** | Strict user turn protection window (`protectedTurns >= 2`) | Forgetting user constraints, corrections, and immediate task goals |
-| **Fail-Open Design** | Timeouts (1,200 ms) and parse-error fallbacks return raw text | Blocked tool loops or aborted agent execution |
+| **Code Syntax Integrity** | Regex keyword density, fence isolation, structural checks; non-prose is never a candidate | Implemented |
+| **Error Trace Preservation** | Log/stack heuristics; tool-result `error` values are marked protected before classification | Implemented |
+| **Tool-Result Integrity** | Adapter preserves IDs/names/tool-call pairing and writes only to `result.value` or a content entry's `text` | Implemented |
+| **JSON/Structured Data** | Tool-result `json` values are protected; top-level JSON is classified as `json` and refused | Implemented |
+| **Prefix-Cache Alignment** | Plugin never edits `event.system` or `event.tools`; cache keys are deterministic | Implemented |
+| **Instruction Recency** | Last *N* user turns protected; default 2, minimum 1 (explicit advanced override) | Implemented |
+| **Fail-Open Design** | Per-candidate 1,200 ms timeout; backend error/empty/timeout and expansion guard leave original text | Implemented |
+| **Watermark Gate** | Estimated request pressure + model limit; below-threshold requests are untouched | Implemented (heuristic) |
+| **Numeric & Line-Number Fidelity** | Post-compression check requires paths, URLs, numbers, line references, and error codes to survive verbatim; failed spans are rejected before caching | Implemented (post-check) |
+| **Expandability** | Originals in a bounded LRU with deterministic handles and a `context_expand` tool | Implemented (in-memory) |
+| **Compaction Quality** | Pre-compress only; chronology preserved; never set `event.result`; code/errors/JSON protected | Implemented (precompress) |
+| **Tool-Output Persistence** | Replacement is shown by the V2 docs, but persistence is unverified; lane is default-off | Unverified |
+| **Compaction Avoidance** | Auto-compaction is decided before the `context` hook; compression cannot prevent that step's decision | Known limitation |
 
 ---
 
 ## 6. Gateway Integration Architecture (OmniRoute 3.8.51)
 
-When using OmniRoute as a proxy gateway (`http://localhost:20128/v1`):
+OmniRoute integration is external to this repository. The plugin does not
+require a gateway, and no gateway code is bundled here. When OpenCode is routed
+through OmniRoute (`http://localhost:20128/v1`):
 
 - **Default State:** OmniRoute operates in `stacked` safe mode (`session-dedup` + `lite` + `ccr` + `headroom`).
 - **Lossy Policy Gate:** Lossy engines (`rtk`, `llmlingua`, `caveman`) require the `x-omniroute-compression: allow-lossy` header.

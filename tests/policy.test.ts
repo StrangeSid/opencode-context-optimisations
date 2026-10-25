@@ -40,7 +40,10 @@ index 1234567..89abcde 100644
 +export const version = 2
 +export const stable = true`
 
-function message(role: string, content: string | Array<{ type: string; text?: string }>): PolicyMessage {
+function message(
+  role: string,
+  content: string | Array<{ type: string; text?: string; protected?: boolean }>,
+): PolicyMessage {
   return { role, content }
 }
 
@@ -199,12 +202,14 @@ test("cache keys are stable and sensitive to text and rate", () => {
   const first = select(messages).candidates[0].cacheKey
   const second = select(messages).candidates[0].cacheKey
   const otherRate = select(messages, { rate: 0.8 }).candidates[0].cacheKey
+  const invalidRate = select(messages, { rate: 2 }).candidates[0].cacheKey
   const otherText = select([
     message("assistant", `${longProse} Extra sentence.`),
     message("user", "current"),
   ]).candidates[0].cacheKey
 
   assert.equal(first, second)
+  assert.equal(first, invalidRate)
   assert.notEqual(first, otherRate)
   assert.notEqual(first, otherText)
   assert.match(first, /^[0-9a-f]{64}$/)
@@ -215,4 +220,37 @@ test("a transcript without user messages protects everything", () => {
   const result = select(messages)
   assert.equal(result.candidates.length, 0)
   assert.equal(result.protectedFromIndex, 0)
+})
+
+test("protected parts are rejected before classification", () => {
+  const messages = [
+    message("assistant", [{ type: "text", text: longProse, protected: true }]),
+    message("user", "current"),
+  ]
+
+  const result = select(messages)
+  assert.equal(result.candidates.length, 0)
+  assert.ok(
+    result.rejected.some(
+      (item) => item.reason === "content" && item.detail === "protected",
+    ),
+  )
+})
+
+test("NaN protectedTurns falls back to the safe default", () => {
+  const messages = [message("assistant", longProse), message("user", "current")]
+  const withNaN = select(messages, { protectedTurns: Number.NaN })
+  const withDefault = select(messages)
+
+  assert.deepEqual(withNaN, withDefault)
+  assert.equal(withNaN.protectedFromIndex, 1)
+  assert.equal(withNaN.candidates.length, 1)
+})
+
+test("NaN minTokens falls back to the default gate", () => {
+  const messages = [message("assistant", prose), message("user", "current")]
+  const result = selectLlmlinguaCandidates(messages, { minTokens: Number.NaN })
+
+  assert.equal(result.candidates.length, 0)
+  assert.ok(result.rejected.some((item) => item.reason === "small"))
 })

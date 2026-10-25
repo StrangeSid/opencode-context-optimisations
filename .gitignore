@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .venv-bench/
+.venv-worker/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 .DS_Store
