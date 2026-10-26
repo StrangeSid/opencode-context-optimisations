@@ -8,7 +8,7 @@ Selective, cache-aware context compression and token optimization for OpenCode V
 > [!IMPORTANT]
 > **LLMLingua token-dropping models destroy code syntax, flatten multi-line logs, and drop negative assertions.** This project implements a strict, content-classified pipeline that reserves SLM compression exclusively for stale natural-language prose while keeping code, JSON schemas, diffs, errors, and recent dialogue byte-identical.
 
-**Docs:** [Architecture](./docs/architecture.md) · [API reference](./docs/api-reference.md) · [ADR 0001](./docs/adr/0001-selective-prose-compression.md) · [Quality harness](./research/eval_quality.mjs) · [Research](./research/README.md)
+**Docs:** [Architecture](./docs/architecture.md) · [API reference](./docs/api-reference.md) · [Roadmap](./ROADMAP.md) · [ADR 0001](./docs/adr/0001-selective-prose-compression.md) · [Quality harness](./research/eval_quality.mjs) · [Research](./research/README.md)
 
 ---
 
@@ -78,6 +78,13 @@ Understanding what can and can't reduce billed API tokens on hosted frontier mod
 - **Quality Harness (`research/eval_quality.mjs`)**: A/B fact-retention test using the OpenCode Go API (default `deepseek-v4.1-flash`), reported with token and cost metrics.
 - **Gateway Interoperability (OmniRoute 3.8+)**: Documented configuration for external gateway engines (RTK, Session-Dedup, Headroom); those engines are not bundled in this repository.
 
+## Roadmap
+
+The prioritized plan — live V2 validation, a broader quality gate, deterministic
+pruning, durable state, packaging, and advanced lanes — is in
+[ROADMAP.md](./ROADMAP.md). It includes issue-sized tasks and explicit
+decision gates for default-on behavior.
+
 ---
 
 ## Project Structure
@@ -86,6 +93,7 @@ Understanding what can and can't reduce billed API tokens on hosted frontier mod
 opencode-context-optimisations/
 ├── LICENSE                   # GNU General Public License v3.0
 ├── FINDINGS.md               # Research spike, gateway audit & taxonomy matrix
+├── ROADMAP.md                # Prioritized future work and decision gates
 ├── package.json              # Exports, test scripts, dependencies
 ├── tsconfig.json             # TypeScript strict configuration
 ├── docs/

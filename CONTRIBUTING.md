@@ -61,8 +61,18 @@ except `.env.example`.
 - `tests/`: Node test runner test suites (`tests/*.test.ts`).
 - `python/`: Optional LLMLingua HTTP worker and its sidecar-only requirements.
 - `research/eval_quality.mjs`: OpenCode Go A/B fact-retention harness.
+- `ROADMAP.md`: Prioritized workstreams, milestones, issue-sized tasks, and decision gates.
 - `docs/`: Architectural specifications, API reference, and decision records.
 - `research/`: Experimental benchmark scripts, raw data, and upstream hook audits.
+
+---
+
+## Where to Start
+
+Pick an issue-sized task from [ROADMAP.md](./ROADMAP.md). The M1 runtime
+validation tasks (tool-hook persistence, nested mutation, model-limit lookup,
+token-estimate error, prompt-cache stability) are the highest-value work.
+Smaller first contributions are listed at the end of the roadmap.
 
 ---
 
